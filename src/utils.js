@@ -17,6 +17,10 @@ const MIME_TYPES = {
   '.jpeg': 'image/jpeg',
   '.webp': 'image/webp',
   '.gif': 'image/gif',
+  '.ico': 'image/x-icon',
+  '.woff': 'font/woff',
+  '.woff2': 'font/woff2',
+  '.ttf': 'font/ttf',
   '.pdf': 'application/pdf',
   '.mp4': 'video/mp4',
   '.webm': 'video/webm',
@@ -32,7 +36,6 @@ const HTML_ESCAPE_MAP = {
   '"': '"',
   "\'": '\''
 };
-// test mark error
 
 export function escapeHtml(value) {
   if (value === null || value === undefined) return '';
@@ -48,6 +51,30 @@ export class HtmlResponse {
 export class FileStreamResponse {
   constructor(filePath) {
     this.filePath = path.resolve(filePath);
+  }
+}
+
+export class StaticRouteDescriptor {
+  constructor(targetPath, options = {}) {
+    if (!targetPath || typeof targetPath !== 'string') {
+      throw new TypeError('serveStatic(targetPath, options) requires a valid file or folder path');
+    }
+    this.targetPath = path.resolve(targetPath);
+    this.index = options.index !== undefined ? options.index : 'index.html';
+    this.dotfiles = options.dotfiles || 'ignore';
+    this.cacheControl = options.cacheControl || null;
+    this.spa = Boolean(options.spa);
+    this.fallbackFile = options.fallback ? path.resolve(options.fallback) : null;
+  }
+}
+
+export class RedirectDescriptor {
+  constructor(target, status = 301) {
+    if (!target || (typeof target !== 'string' && typeof target !== 'function')) {
+      throw new TypeError('redirect(target, status) requires a target URL string or resolver function');
+    }
+    this.target = target;
+    this.status = status;
   }
 }
 
@@ -194,23 +221,36 @@ export function validateExpect(payload, schema, basePath = '') {
   return errors;
 }
 
-export async function buildFileHttpResponse(descriptor, reqHeaders) {
+export async function buildFileHttpResponse(descriptor, reqHeaders, opts = {}) {
   let stat;
   try {
     stat = await fsp.stat(descriptor.filePath);
   } catch {
+    if (opts.returnMissing) return null;
     return Response.json({ error: 'File Not Found' }, { status: 404 });
   }
 
   if (!stat.isFile()) {
+    if (opts.returnMissing) return null;
     return Response.json({ error: 'Not a file' }, { status: 404 });
   }
 
+  const isHead = opts.method === 'HEAD';
+  const baseStatus = opts.statusOverride || 200;
   const etag = `W/"${stat.size}-${Math.floor(stat.mtimeMs)}"`;
-  if (reqHeaders.get('if-none-match') === etag) {
+
+  const commonHeaders = {
+    ETag: etag,
+    'Accept-Ranges': 'bytes'
+  };
+  if (opts.cacheControl) {
+    commonHeaders['Cache-Control'] = opts.cacheControl;
+  }
+
+  if (!opts.statusOverride && reqHeaders.get('if-none-match') === etag) {
     return new Response(null, {
       status: 304,
-      headers: { ETag: etag, 'Accept-Ranges': 'bytes' }
+      headers: commonHeaders
     });
   }
 
@@ -218,7 +258,7 @@ export async function buildFileHttpResponse(descriptor, reqHeaders) {
   const contentType = MIME_TYPES[ext] || 'application/octet-stream';
   const rangeHeader = reqHeaders.get('range');
 
-  if (rangeHeader && rangeHeader.startsWith('bytes=')) {
+  if (!opts.statusOverride && rangeHeader && rangeHeader.startsWith('bytes=')) {
     const [startStr, endStr] = rangeHeader.replace('bytes=', '').split('-');
     const start = startStr ? parseInt(startStr, 10) : 0;
     const end = endStr ? parseInt(endStr, 10) : stat.size - 1;
@@ -230,29 +270,112 @@ export async function buildFileHttpResponse(descriptor, reqHeaders) {
       });
     }
 
-    const nodeStream = fs.createReadStream(descriptor.filePath, { start, end });
-    return new Response(Readable.toWeb(nodeStream), {
+    const body = isHead ? null : Readable.toWeb(fs.createReadStream(descriptor.filePath, { start, end }));
+    return new Response(body, {
       status: 206,
       headers: {
+        ...commonHeaders,
         'Content-Type': contentType,
         'Content-Length': String(end - start + 1),
-        'Content-Range': `bytes ${start}-${end}/${stat.size}`,
-        'Accept-Ranges': 'bytes',
-        ETag: etag
+        'Content-Range': `bytes ${start}-${end}/${stat.size}`
       }
     });
   }
 
-  const nodeStream = fs.createReadStream(descriptor.filePath);
-  return new Response(Readable.toWeb(nodeStream), {
-    status: 200,
+  const body = isHead ? null : Readable.toWeb(fs.createReadStream(descriptor.filePath));
+  return new Response(body, {
+    status: baseStatus,
     headers: {
+      ...commonHeaders,
       'Content-Type': contentType,
-      'Content-Length': String(stat.size),
-      'Accept-Ranges': 'bytes',
-      ETag: etag
+      'Content-Length': String(stat.size)
     }
   });
+}
+
+export async function buildStaticHttpResponse(descriptor, subPath, reqHeaders, method = 'GET') {
+  let rootStat;
+  try {
+    rootStat = await fsp.stat(descriptor.targetPath);
+  } catch {
+    return { errorStatus: 404, message: 'Not Found' };
+  }
+
+  const cleanSub = String(subPath || '').replace(/^\/+/, '');
+
+  if (rootStat.isFile()) {
+    if (cleanSub.length > 0) {
+      return { errorStatus: 404, message: 'Not Found' };
+    }
+    const response = await buildFileHttpResponse(
+      new FileStreamResponse(descriptor.targetPath),
+      reqHeaders,
+      { cacheControl: descriptor.cacheControl, method, returnMissing: true }
+    );
+    return response ? { response } : { errorStatus: 404, message: 'Not Found' };
+  }
+
+  if (!rootStat.isDirectory()) {
+    return { errorStatus: 404, message: 'Not Found' };
+  }
+
+  if (cleanSub.includes('\0')) {
+    return { errorStatus: 400, message: 'Invalid path' };
+  }
+
+  const parts = cleanSub ? cleanSub.split('/') : [];
+  for (const seg of parts) {
+    if (seg === '..') {
+      return { errorStatus: 403, message: 'Forbidden' };
+    }
+    if (seg.startsWith('.') && seg !== '.') {
+      if (descriptor.dotfiles === 'deny') return { errorStatus: 403, message: 'Forbidden' };
+      if (descriptor.dotfiles === 'ignore') return { errorStatus: 404, message: 'Not Found' };
+    }
+  }
+
+  const candidate = path.resolve(descriptor.targetPath, cleanSub);
+  if (candidate !== descriptor.targetPath && !candidate.startsWith(descriptor.targetPath + path.sep)) {
+    return { errorStatus: 403, message: 'Forbidden' };
+  }
+
+  let targetFile = null;
+  try {
+    const stat = await fsp.stat(candidate);
+    if (stat.isDirectory()) {
+      if (descriptor.index) {
+        const indexPath = path.resolve(candidate, descriptor.index);
+        if (indexPath.startsWith(descriptor.targetPath + path.sep)) {
+          const idxStat = await fsp.stat(indexPath).catch(() => null);
+          if (idxStat?.isFile()) targetFile = indexPath;
+        }
+      }
+    } else if (stat.isFile()) {
+      targetFile = candidate;
+    }
+  } catch {
+    targetFile = null;
+  }
+
+  if (!targetFile && (descriptor.spa || descriptor.fallbackFile)) {
+    const fallback = descriptor.fallbackFile
+      || (descriptor.index ? path.join(descriptor.targetPath, descriptor.index) : null);
+    if (fallback) {
+      const fbStat = await fsp.stat(fallback).catch(() => null);
+      if (fbStat?.isFile()) targetFile = fallback;
+    }
+  }
+
+  if (!targetFile) {
+    return { errorStatus: 404, message: 'Not Found' };
+  }
+
+  const response = await buildFileHttpResponse(
+    new FileStreamResponse(targetFile),
+    reqHeaders,
+    { cacheControl: descriptor.cacheControl, method, returnMissing: true }
+  );
+  return response ? { response } : { errorStatus: 404, message: 'Not Found' };
 }
 
 export async function* parseMultipartStream(webStream, contentType, opts = {}) {

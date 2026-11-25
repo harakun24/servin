@@ -1,3 +1,5 @@
+import { StaticRouteDescriptor, RedirectDescriptor } from './utils.js';
+
 const GUARD_META = Symbol('servin.guard');
 const PARAM_META = Symbol('servin.param');
 
@@ -127,10 +129,12 @@ function attachMeta(branch, { addGuard, setParam }) {
         return branch.apply(this, args);
       };
     }
+  } else if (branch instanceof StaticRouteDescriptor || branch instanceof RedirectDescriptor) {
+    target = Object.assign(Object.create(Object.getPrototypeOf(branch)), branch);
   } else if (branch && typeof branch === 'object') {
     target = { ...branch };
   } else {
-    throw new TypeError('Branch must be a route object or handler function');
+    throw new TypeError('Branch must be a route object, descriptor, or handler function');
   }
 
   if (nextGuards.length > 0) {
@@ -164,6 +168,14 @@ export function param(rule, branch) {
   return attachMeta(branch, { setParam: rule });
 }
 
+export function serveStatic(targetPath, options = {}) {
+  return new StaticRouteDescriptor(targetPath, options);
+}
+
+export function redirect(target, status = 301) {
+  return new RedirectDescriptor(target, status);
+}
+
 function parseVerbKey(key) {
   if (key === 'ws') return ['WS'];
   const parts = key.split('|').map((s) => s.trim().toUpperCase());
@@ -191,9 +203,62 @@ function classifySegment(seg, customTypes = {}, paramRule = null) {
   return { type: 'static', priority: 0, value: seg, parse: null, raw: seg };
 }
 
-export function compileDomainTree(apiRoot = {}, customTypes = {}) {
+export function compileDomainTree(apiRoot = {}, customTypes = {}, staticConfig = null) {
   const routes = [];
   let nodeCounter = 0;
+
+  function registerStaticDescriptor(descriptor, baseSegments, dotPath, inheritedGuards, inheritedMeta, isRootFallback = false) {
+    const wildSeg = {
+      type: 'wild',
+      priority: isRootFallback ? 4 : 3,
+      param: 'subpath',
+      optionalWild: true,
+      parse: null,
+      raw: '$subpath'
+    };
+    const fullSegments = [...baseSegments, wildSeg];
+    const paramNames = fullSegments.filter((s) => s.type !== 'static').map((s) => s.param);
+    const descGuards = [...inheritedGuards, ...(descriptor[GUARD_META] || [])];
+
+    routes.push({
+      nodeId: `static_${++nodeCounter}`,
+      dotPath: dotPath.join('.'),
+      segments: fullSegments,
+      paramNames,
+      verbs: ['GET', 'HEAD'],
+      staticDescriptor: descriptor,
+      handler: null,
+      isAsyncGen: false,
+      guards: descGuards,
+      meta: inheritedMeta,
+      nodeCache: null,
+      ancestorCaches: [],
+      nodeInFlight: null,
+      nodeIdempotency: null
+    });
+  }
+
+  function registerRedirectDescriptor(descriptor, fullSegments, dotPath, inheritedGuards, inheritedMeta, verbs = ['GET', 'HEAD']) {
+    const paramNames = fullSegments.filter((s) => s.type !== 'static').map((s) => s.param);
+    const descGuards = [...inheritedGuards, ...(descriptor[GUARD_META] || [])];
+
+    routes.push({
+      nodeId: `redirect_${++nodeCounter}`,
+      dotPath: dotPath.join('.'),
+      segments: fullSegments,
+      paramNames,
+      verbs,
+      redirectDescriptor: descriptor,
+      handler: null,
+      isAsyncGen: false,
+      guards: descGuards,
+      meta: inheritedMeta,
+      nodeCache: null,
+      ancestorCaches: [],
+      nodeInFlight: null,
+      nodeIdempotency: null
+    });
+  }
 
   function walk(node, segments, dotPath, inheritedGuards, inheritedMeta, ancestorCaches) {
     if (!node || typeof node !== 'object') return;
@@ -211,10 +276,19 @@ export function compileDomainTree(apiRoot = {}, customTypes = {}) {
     const nodeInFlight = meta.coalesce ? new Map() : null;
     const nodeIdempotency = meta.idempotent ? new Map() : null;
 
+    const hasExplicitDynamicChild = Object.keys(node).some(
+      (k) => !META_KEYS.has(k) && k.startsWith('$')
+    );
+
     for (const [key, value] of Object.entries(node)) {
       if (META_KEYS.has(key)) continue;
 
       const verbs = parseVerbKey(key);
+      if (verbs && value instanceof RedirectDescriptor) {
+        registerRedirectDescriptor(value, segments, [...dotPath, key], guards, meta, verbs);
+        continue;
+      }
+
       if (verbs && typeof value === 'function') {
         const paramNames = segments.filter((s) => s.type !== 'static').map((s) => s.param);
         routes.push({
@@ -232,10 +306,49 @@ export function compileDomainTree(apiRoot = {}, customTypes = {}) {
           nodeInFlight,
           nodeIdempotency
         });
+
+        if (!hasExplicitDynamicChild) {
+          const directChildSeg = {
+            type: 'wild',
+            priority: 5,
+            param: 'id',
+            optionalWild: true,
+            directNodeParam: true,
+            parse: null,
+            raw: '$direct'
+          };
+          routes.push({
+            nodeId: `${nodeId}_direct_${key}`,
+            dotPath: [...dotPath, key].join('.'),
+            segments: [...segments, directChildSeg],
+            paramNames: [],
+            verbs,
+            handler: value,
+            isAsyncGen: value instanceof AsyncGeneratorFunction,
+            guards,
+            meta,
+            nodeCache,
+            ancestorCaches,
+            nodeInFlight,
+            nodeIdempotency
+          });
+        }
         continue;
       }
 
       const paramRule = value?.[PARAM_META] ?? null;
+
+      if (value instanceof StaticRouteDescriptor) {
+        const seg = classifySegment(key, customTypes, paramRule);
+        registerStaticDescriptor(value, [...segments, seg], [...dotPath, key], guards, meta);
+        continue;
+      }
+
+      if (value instanceof RedirectDescriptor) {
+        const seg = classifySegment(key, customTypes, paramRule);
+        registerRedirectDescriptor(value, [...segments, seg], [...dotPath, key], guards, meta);
+        continue;
+      }
 
       if (typeof value === 'function') {
         const seg = classifySegment(key, customTypes, paramRule);
@@ -270,6 +383,26 @@ export function compileDomainTree(apiRoot = {}, customTypes = {}) {
 
   walk(apiRoot, [], [], [], {}, []);
 
+  if (staticConfig) {
+    if (typeof staticConfig === 'string' || staticConfig instanceof StaticRouteDescriptor) {
+      const desc = staticConfig instanceof StaticRouteDescriptor
+        ? staticConfig
+        : new StaticRouteDescriptor(staticConfig);
+      registerStaticDescriptor(desc, [], ['static'], [], {}, true);
+    } else if (typeof staticConfig === 'object') {
+      for (const [mountPrefix, target] of Object.entries(staticConfig)) {
+        const desc = target instanceof StaticRouteDescriptor
+          ? target
+          : new StaticRouteDescriptor(target);
+        const cleanPrefix = mountPrefix.replace(/^\/+|\/+$/g, '');
+        const prefixSegs = cleanPrefix
+          ? cleanPrefix.split('/').map((s) => classifySegment(s, customTypes))
+          : [];
+        registerStaticDescriptor(desc, prefixSegs, ['static', ...prefixSegs.map((s) => s.raw)], [], {}, prefixSegs.length === 0);
+      }
+    }
+  }
+
   routes.sort((a, b) => {
     const minLen = Math.min(a.segments.length, b.segments.length);
     for (let i = 0; i < minLen; i++) {
@@ -295,7 +428,25 @@ export function matchDomainRoute(routes, method, pathname) {
     for (let i = 0; i < route.segments.length; i++) {
       const seg = route.segments[i];
       if (seg.type === 'wild') {
-        params[seg.param] = parts.slice(i).map(decodeURIComponent).join('/');
+        if (i >= parts.length && !seg.optionalWild) {
+          matched = false;
+          break;
+        }
+        try {
+          const decodedParts = parts.slice(i).map(decodeURIComponent);
+          if (seg.directNodeParam) {
+            if (decodedParts.length === 1) {
+              params.id = decodedParts[0];
+            } else if (decodedParts.length > 1) {
+              params.rest = decodedParts;
+              params.id = decodedParts[0];
+            }
+          } else {
+            params[seg.param] = decodedParts.join('/');
+          }
+        } catch {
+          matched = false;
+        }
         break;
       }
       if (i >= parts.length) {
@@ -348,21 +499,35 @@ export function matchDomainRoute(routes, method, pathname) {
 }
 
 export function generateVirtualClientModule(routes) {
-  const manifest = routes.map((r) => ({
-    dotPath: r.dotPath,
-    verbs: r.verbs,
-    isAsyncGen: r.isAsyncGen
-  }));
+  const manifest = routes
+    .filter((r) => !r.staticDescriptor && !r.redirectDescriptor)
+    .map((r) => ({
+      dotPath: r.dotPath,
+      verbs: r.verbs,
+      isAsyncGen: r.isAsyncGen
+    }));
 
   return `// Auto-generated Zero-Build Virtual ESM Client by servin
 const MANIFEST = ${JSON.stringify(manifest, null, 2)};
 const ORIGIN = new URL(import.meta.url).origin;
+const HTTP_VERBS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS']);
 
 function parseMethod(key) {
   if (key === 'ws') return 'WS';
   const upper = key.split('|')[0].toUpperCase();
-  const verbs = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS']);
-  return verbs.has(upper) ? upper : null;
+  return HTTP_VERBS.has(upper) ? upper : null;
+}
+
+function isOptionsBag(arg) {
+  return Boolean(
+    arg &&
+    typeof arg === 'object' &&
+    !Array.isArray(arg) &&
+    !(arg instanceof FormData) &&
+    !(arg instanceof URLSearchParams) &&
+    !(arg instanceof Blob) &&
+    Object.prototype.hasOwnProperty.call(arg, 'headers')
+  );
 }
 
 function createNode(chain) {
@@ -438,11 +603,43 @@ function createNode(chain) {
         };
       }
 
-      const hasBody = method === 'POST' || method === 'PUT' || method === 'PATCH';
-      const payload = hasBody ? argQueue.shift() : undefined;
-      const queryObj = argQueue.shift();
-      const url = new URL(ORIGIN + pathname);
+      let customHeaders = {};
+      let payload;
+      let queryObj;
 
+      const hasBody = method === 'POST' || method === 'PUT' || method === 'PATCH';
+
+      if (hasBody) {
+        const first = argQueue.shift();
+        if (isOptionsBag(first)) {
+          customHeaders = { ...first.headers };
+          payload = first.body !== undefined ? first.body : argQueue.shift();
+          queryObj = first.query !== undefined ? first.query : argQueue.shift();
+        } else {
+          payload = first;
+          const second = argQueue.shift();
+          if (isOptionsBag(second)) {
+            customHeaders = { ...second.headers };
+            queryObj = second.query !== undefined ? second.query : argQueue.shift();
+          } else {
+            queryObj = second;
+          }
+        }
+      } else {
+        const first = argQueue.shift();
+        if (isOptionsBag(first)) {
+          customHeaders = { ...first.headers };
+          queryObj = first.query !== undefined ? first.query : argQueue.shift();
+        } else {
+          queryObj = first;
+          const second = argQueue.shift();
+          if (isOptionsBag(second)) {
+            customHeaders = { ...second.headers };
+          }
+        }
+      }
+
+      const url = new URL(ORIGIN + pathname);
       if (queryObj && typeof queryObj === 'object') {
         for (const [k, v] of Object.entries(queryObj)) {
           if (v !== undefined && v !== null) url.searchParams.set(k, String(v));
@@ -453,7 +650,7 @@ function createNode(chain) {
         return (async function* () {
           const res = await fetch(url, {
             method,
-            headers: { Accept: 'text/event-stream' },
+            headers: { Accept: 'text/event-stream', ...customHeaders },
             credentials: 'include'
           });
           if (!res.ok) throw Object.assign(new Error(await res.text()), { status: res.status });
@@ -475,11 +672,13 @@ function createNode(chain) {
       }
 
       return (async () => {
-        const headers = {};
+        const headers = { ...customHeaders };
         let body;
         if (hasBody && payload !== undefined) {
-          headers['Content-Type'] = 'application/json';
-          body = JSON.stringify(payload);
+          if (!Object.keys(headers).some((k) => k.toLowerCase() === 'content-type')) {
+            headers['Content-Type'] = 'application/json';
+          }
+          body = typeof payload === 'string' ? payload : JSON.stringify(payload);
         }
         const res = await fetch(url, { method, headers, body, credentials: 'include' });
         if (res.status === 204) return null;

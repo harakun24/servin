@@ -10,7 +10,8 @@ import {
   runUndoStack,
   flushDebugLogs,
   getReactions,
-  ServinAbortError
+  ServinAbortError,
+  ServinRedirect
 } from './wire.js';
 import { SessionManager, MemorySessionStore } from './session.js';
 import {
@@ -31,6 +32,7 @@ import {
   FileStreamResponse,
   HtmlResponse,
   buildFileHttpResponse,
+  buildStaticHttpResponse,
   createLagMonitor
 } from './utils.js';
 
@@ -99,7 +101,7 @@ export function serve(config = {}) {
   const port = config.port ?? 3000;
   const host = config.host ?? '127.0.0.1';
   const silent = config.silent ?? false;
-  const routes = compileDomainTree(config.api || {});
+  const routes = compileDomainTree(config.api || {}, config.types || {}, config.static || null);
   const virtualClientCode = generateVirtualClientModule(routes);
 
   const broker = new WebSocketBroker();
@@ -146,6 +148,141 @@ export function serve(config = {}) {
       headers.set('Access-Control-Allow-Credentials', 'true');
       headers.set('Vary', 'Origin');
     }
+  }
+
+  function findErrorHandler(status) {
+    const errorsCfg = config.errors;
+    if (!errorsCfg || typeof errorsCfg !== 'object') return null;
+
+    if (Object.prototype.hasOwnProperty.call(errorsCfg, status)) {
+      return errorsCfg[status];
+    }
+    const statusStr = String(status);
+    if (Object.prototype.hasOwnProperty.call(errorsCfg, statusStr)) {
+      return errorsCfg[statusStr];
+    }
+    if (status >= 400 && status < 500 && errorsCfg['4xx']) {
+      return errorsCfg['4xx'];
+    }
+    if (status >= 500 && errorsCfg['5xx']) {
+      return errorsCfg['5xx'];
+    }
+    return errorsCfg.default ?? null;
+  }
+
+  async function buildErrorResponse({ webReq, status, defaultPayload, existingCtx = null, rawError = null, extraHeaders = null }) {
+    const handler = findErrorHandler(status);
+    const url = existingCtx?.url || new URL(webReq.url);
+    const method = existingCtx?.method || webReq.method.toUpperCase();
+
+    if (!handler) {
+      const headers = existingCtx?.outgoingHeaders || new Headers();
+      if (extraHeaders) {
+        for (const [k, v] of Object.entries(extraHeaders)) headers.set(k, v);
+      }
+      if (status === 405 && !defaultPayload) {
+        return new Response(null, { status: 405, headers });
+      }
+      return Response.json(defaultPayload || { error: 'Error' }, { status, headers });
+    }
+
+    const ctx = existingCtx || createRequestContext({
+      req: webReq,
+      method,
+      url,
+      signal: webReq.signal,
+      sessionManager,
+      broker,
+      deferTracker
+    });
+
+    if (!existingCtx) {
+      applyCorsHeaders(webReq, ctx.outgoingHeaders);
+    }
+    if (extraHeaders) {
+      for (const [k, v] of Object.entries(extraHeaders)) {
+        ctx.outgoingHeaders.set(k, v);
+      }
+    }
+
+    ctx.statusCode = status;
+    ctx.statusExplicit = false;
+
+    const runCustomizer = async () => {
+      try {
+        const result = typeof handler === 'function'
+          ? await handler({
+            status,
+            message: defaultPayload?.error || '',
+            details: defaultPayload?.details,
+            path: url.pathname,
+            method,
+            error: rawError,
+            wire
+          })
+          : handler;
+
+        if (!ctx.isSimulated) {
+          await ctx.sessionHandle?.commit(ctx.outgoingHeaders).catch(() => { });
+        }
+
+        if (result instanceof Response) return result;
+
+        if (result instanceof FileStreamResponse) {
+          const fileRes = await buildFileHttpResponse(result, webReq.headers, {
+            method,
+            statusOverride: ctx.statusCode
+          });
+          ctx.outgoingHeaders.forEach((v, k) => {
+            if (!fileRes.headers.has(k)) fileRes.headers.set(k, v);
+          });
+          return fileRes;
+        }
+
+        if (result instanceof HtmlResponse) {
+          if (!ctx.outgoingHeaders.has('content-type')) {
+            ctx.outgoingHeaders.set('Content-Type', 'text/html; charset=utf-8');
+          }
+          return new Response(result.html, {
+            status: ctx.statusCode,
+            headers: ctx.outgoingHeaders
+          });
+        }
+
+        if (typeof result === 'string') {
+          if (!ctx.outgoingHeaders.has('content-type')) {
+            ctx.outgoingHeaders.set('Content-Type', 'text/plain; charset=utf-8');
+          }
+          return new Response(result, {
+            status: ctx.statusCode,
+            headers: ctx.outgoingHeaders
+          });
+        }
+
+        if (result === null || result === undefined) {
+          return new Response(null, { status: ctx.statusCode, headers: ctx.outgoingHeaders });
+        }
+
+        return Response.json(result, {
+          status: ctx.statusCode,
+          headers: ctx.outgoingHeaders
+        });
+      } catch (err) {
+        if (err instanceof ServinRedirect) {
+          if (!ctx.isSimulated) {
+            await ctx.sessionHandle?.commit(ctx.outgoingHeaders).catch(() => { });
+          }
+          ctx.outgoingHeaders.set('Location', err.location);
+          return new Response(null, { status: err.status, headers: ctx.outgoingHeaders });
+        }
+        return Response.json(defaultPayload || { error: 'Internal Server Error' }, {
+          status,
+          headers: ctx.outgoingHeaders
+        });
+      }
+    };
+
+    return existingCtx ? runCustomizer() : wireStorage.run(ctx, runCustomizer);
   }
 
   async function writeSnapshot(ctx, route, err) {
@@ -248,19 +385,30 @@ export function serve(config = {}) {
     }
 
     if (match.status === 404) {
-      return Response.json({ error: 'Not Found' }, { status: 404 });
+      return buildErrorResponse({
+        webReq,
+        status: 404,
+        defaultPayload: { error: 'Not Found' }
+      });
     }
     if (match.status === 405) {
-      return new Response(null, { status: 405, headers: { Allow: match.allow } });
+      return buildErrorResponse({
+        webReq,
+        status: 405,
+        defaultPayload: null,
+        extraHeaders: { Allow: match.allow }
+      });
     }
 
     const { route, params } = match;
 
     if (route.meta.priority === 'low' && lagMonitor.isOverloaded()) {
-      return Response.json(
-        { error: 'Service temporarily overloaded' },
-        { status: 503, headers: { 'Retry-After': '2' } }
-      );
+      return buildErrorResponse({
+        webReq,
+        status: 503,
+        defaultPayload: { error: 'Service temporarily overloaded' },
+        extraHeaders: { 'Retry-After': '2' }
+      });
     }
 
     const ctx = createRequestContext({
@@ -296,6 +444,53 @@ export function serve(config = {}) {
           await guardFn();
         }
 
+        // Handle declarative RedirectDescriptor
+        if (route.redirectDescriptor) {
+          const paramValues = route.paramNames.map((name) => params[name]);
+          const queryObj = Object.fromEntries(url.searchParams.entries());
+          const targetUrl = typeof route.redirectDescriptor.target === 'function'
+            ? await route.redirectDescriptor.target(...paramValues, queryObj)
+            : route.redirectDescriptor.target;
+
+          if (!ctx.isSimulated) {
+            await ctx.sessionHandle?.commit(ctx.outgoingHeaders);
+          }
+          ctx.outgoingHeaders.set('Location', String(targetUrl));
+          return new Response(null, {
+            status: route.redirectDescriptor.status,
+            headers: ctx.outgoingHeaders
+          });
+        }
+
+        // Handle StaticRouteDescriptor (file or folder)
+        if (route.staticDescriptor) {
+          const staticRes = await buildStaticHttpResponse(
+            route.staticDescriptor,
+            params.subpath || '',
+            webReq.headers,
+            method
+          );
+
+          if (staticRes.errorStatus) {
+            return buildErrorResponse({
+              webReq,
+              status: staticRes.errorStatus,
+              defaultPayload: { error: staticRes.message },
+              existingCtx: ctx
+            });
+          }
+
+          if (!ctx.isSimulated) {
+            await ctx.sessionHandle?.commit(ctx.outgoingHeaders);
+          }
+          ctx.outgoingHeaders.forEach((v, k) => {
+            if (!staticRes.response.headers.has(k)) {
+              staticRes.response.headers.set(k, v);
+            }
+          });
+          return staticRes.response;
+        }
+
         const paramValues = route.paramNames.map((name) => params[name]);
         const queryObj = Object.fromEntries(url.searchParams.entries());
         const hasBody = method === 'POST' || method === 'PUT' || method === 'PATCH';
@@ -310,12 +505,13 @@ export function serve(config = {}) {
           if (route.meta.expect) {
             const validationErrors = validateExpect(payload, route.meta.expect);
             if (validationErrors.length > 0) {
-              ctx.statusCode = 422;
               if (!ctx.isSimulated) await ctx.sessionHandle?.commit(ctx.outgoingHeaders);
-              return Response.json(
-                { error: 'Validation Failed', details: validationErrors },
-                { status: 422, headers: ctx.outgoingHeaders }
-              );
+              return buildErrorResponse({
+                webReq,
+                status: 422,
+                defaultPayload: { error: 'Validation Failed', details: validationErrors },
+                existingCtx: ctx
+              });
             }
           }
         }
@@ -335,11 +531,13 @@ export function serve(config = {}) {
 
           if (bucket.remaining <= 0) {
             const retrySec = Math.max(1, Math.ceil((bucket.resetAt - now) / 1000));
-            ctx.outgoingHeaders.set('Retry-After', String(retrySec));
-            return Response.json(
-              { error: 'Too Many Requests' },
-              { status: 429, headers: ctx.outgoingHeaders }
-            );
+            return buildErrorResponse({
+              webReq,
+              status: 429,
+              defaultPayload: { error: 'Too Many Requests' },
+              existingCtx: ctx,
+              extraHeaders: { 'Retry-After': String(retrySec) }
+            });
           }
 
           activeLimiterBucket = bucket;
@@ -384,7 +582,7 @@ export function serve(config = {}) {
 
         // Idempotency Check for Mutations
         const idemHeader = webReq.headers.get('idempotency-key');
-        const idemKey = route.nodeIdempotency && idemHeader ? `${route.nodeIdempotency}:${idemHeader}` : null;
+        const idemKey = route.nodeIdempotency && idemHeader ? `${route.nodeId}:${idemHeader}` : null;
         if (idemKey && !ctx.isSimulated) {
           const cachedIdem = route.nodeIdempotency.get(idemKey);
           if (cachedIdem && cachedIdem.expiresAt > Date.now()) {
@@ -484,7 +682,19 @@ export function serve(config = {}) {
         }
 
         if (rawResult instanceof FileStreamResponse) {
-          return await buildFileHttpResponse(rawResult, webReq.headers);
+          const fileRes = await buildFileHttpResponse(rawResult, webReq.headers, {
+            method,
+            returnMissing: true
+          });
+          if (!fileRes) {
+            return buildErrorResponse({
+              webReq,
+              status: 404,
+              defaultPayload: { error: 'File Not Found' },
+              existingCtx: ctx
+            });
+          }
+          return fileRes;
         }
 
         if (rawResult instanceof HtmlResponse) {
@@ -535,16 +745,32 @@ export function serve(config = {}) {
           headers: ctx.outgoingHeaders
         });
       } catch (err) {
+        if (err instanceof ServinRedirect) {
+          if (ctx.isSimulated) {
+            await runUndoStack(ctx);
+          } else {
+            await ctx.sessionHandle?.commit(ctx.outgoingHeaders);
+          }
+          ctx.outgoingHeaders.set('Location', err.location);
+          return new Response(null, {
+            status: err.status,
+            headers: ctx.outgoingHeaders
+          });
+        }
+
         await runUndoStack(ctx);
         if (!ctx.isSimulated) {
           await ctx.sessionHandle?.commit(ctx.outgoingHeaders).catch(() => { });
         }
 
         if (err instanceof ServinAbortError) {
-          return Response.json(
-            { error: err.message },
-            { status: err.status, headers: ctx.outgoingHeaders }
-          );
+          return buildErrorResponse({
+            webReq,
+            status: err.status,
+            defaultPayload: { error: err.message },
+            existingCtx: ctx,
+            rawError: err
+          });
         }
 
         flushDebugLogs(ctx, err);
@@ -556,10 +782,13 @@ export function serve(config = {}) {
           return Response.json(custom, { status: 500, headers: ctx.outgoingHeaders });
         }
 
-        return Response.json(
-          { error: 'Internal Server Error' },
-          { status: 500, headers: ctx.outgoingHeaders }
-        );
+        return buildErrorResponse({
+          webReq,
+          status: 500,
+          defaultPayload: { error: 'Internal Server Error' },
+          existingCtx: ctx,
+          rawError: err
+        });
       } finally {
         if (activeLimiterBucket) {
           const cost = ctx.costExplicit ? ctx.costPoints : 1;

@@ -2,7 +2,7 @@
 
 **A modern, zero-dependency Node.js web server built around _Domain-Tree Projection_ and _Ambient Wire_.**
 
-`servin` lets you build HTTP APIs, HTML pages, Server-Sent Events (SSE), and WebSockets using plain JavaScript functions and nested object trees. Instead of manually wiring string paths, `(req, res)` handlers, and `next()` middleware chains, you express your backend as a clean JavaScript object hierarchy while `servin` handles routing, parameter type coercion, self-invalidating caching, session persistence, rate limiting, and protocol translation automatically.
+`servin` lets you build HTTP APIs, static websites, HTML pages, Server-Sent Events (SSE), and WebSockets using plain JavaScript functions and nested object trees. Instead of manually wiring string paths, `(req, res)` handlers, and `next()` middleware chains, you express your backend as a clean JavaScript object hierarchy while `servin` handles routing, parameter type coercion, self-invalidating caching, session persistence, rate limiting, and zero-build frontend client generation automatically.
 
 ---
 
@@ -10,87 +10,86 @@
 
 1. [Why servin?](#1-why-servin)
 2. [Requirements & Installation](#2-requirements--installation)
-3. [Step-by-Step Walkthrough](#3-step-by-step-walkthrough)
-   - [Step 1: Booting the Server (`serve`)](#step-1-booting-the-server-serve)
-   - [Step 2: Understanding the URL Routing Paradigm & Adding `GET`](#step-2-understanding-the-url-routing-paradigm--adding-get)
-   - [Step 3: Dynamic & Typed URL Parameters (`$id` + `param`)](#step-3-dynamic--typed-url-parameters-id--param)
-   - [Step 4: Creating Resources with `POST`, Validation & Rollbacks](#step-4-creating-resources-with-post-validation--rollbacks)
-   - [Step 5: Updating (`put|patch`), Deleting (`delete`) & Auto-Invalidating `cache`](#step-5-updating-putpatch-deleting-delete--auto-invalidating-cache)
-   - [Step 6: Decoupled Side Effects (`reactTo`) & Serving HTML (`wire.html`)](#step-6-decoupled-side-effects-reactto--serving-html-wirehtml)
-   - [Step 7: Complete Assembled Application](#step-7-complete-assembled-application)
-4. [Server Configuration (`serve`)](#4-server-configuration-serve)
-   - [4.1 Configuration Options Reference](#41-configuration-options-reference)
-   - [4.2 Server Instance API](#42-server-instance-api)
-5. [Domain-Tree Projection & Routing](#5-domain-tree-projection--routing)
-   - [5.1 Static, Dynamic, Typed, and Wildcard Segments](#51-static-dynamic-typed-and-wildcard-segments)
-   - [5.2 Automatic Route Matching Priority](#52-automatic-route-matching-priority)
-   - [5.3 HTTP Methods, Method Unions & Shorthand Leaf Functions](#53-http-methods-method-unions--shorthand-leaf-functions)
-   - [5.4 Predictable Handler Argument Mapping](#54-predictable-handler-argument-mapping)
-   - [5.5 Typed Route Parameters (`param`) — Complete Type Guide](#55-typed-route-parameters-param--complete-type-guide)
-6. [Automatic Response Formatting & HTML Rendering](#6-automatic-response-formatting--html-rendering)
-   - [6.1 Content-Type Resolution Matrix](#61-content-type-resolution-matrix)
-   - [6.2 XSS-Safe HTML Templates & Raw HTML (`wire.html`)](#62-xss-safe-html-templates--raw-html-wirehtml)
-   - [6.3 Streaming Files with ETag & Byte-Range (`wire.file`)](#63-streaming-files-with-etag--byte-range-wirefile)
-   - [6.4 Server-Sent Events (SSE) with Async Generators](#64-server-sent-events-sse-with-async-generators)
-   - [6.5 Sparse Fieldsets (`?fields=`) & Automatic Redaction (`redact`)](#65-sparse-fieldsets-fields--automatic-redaction-redact)
-7. [Security, Sessions & Traffic Control](#7-security-sessions--traffic-control)
-   - [7.1 Branch & Leaf Protection (`guard`)](#71-branch--leaf-protection-guard)
-   - [7.2 Lazy Reactive Sessions (`wire.session`) & Multi-Device Control (`wire.sessions`)](#72-lazy-reactive-sessions-wiresession--multi-device-control-wiresessions)
-   - [7.3 Custom Session Store Interface (Redis / Database)](#73-custom-session-store-interface-redis--database)
-   - [7.4 Timing-Safe Webhook Verification (`webhook`)](#74-timing-safe-webhook-verification-webhook)
-   - [7.5 Context-Aware Smart Rate Limiting (`limit` & `wire.cost`)](#75-context-aware-smart-rate-limiting-limit--wirecost)
-   - [7.6 CORS & Preflight Handling (`origins`)](#76-cors--preflight-handling-origins)
-8. [Data Integrity, Caching & Resilience](#8-data-integrity-caching--resilience)
-   - [8.1 Self-Invalidating Response Cache (`cache`)](#81-self-invalidating-response-cache-cache)
-   - [8.2 Request Coalescing (`coalesce`)](#82-request-coalescing-coalesce)
-   - [8.3 Idempotent Mutations (`idempotent`)](#83-idempotent-mutations-idempotent)
-   - [8.4 Declarative Shape-by-Example Validation (`expect`)](#84-declarative-shape-by-example-validation-expect)
-   - [8.5 Automatic Rollbacks (`wire.undo`) & Speculative Dry-Runs (`X-Simulate`)](#85-automatic-rollbacks-wireundo--speculative-dry-runs-x-simulate)
-   - [8.6 Graceful Background Tasks (`wire.defer`)](#86-graceful-background-tasks-wiredefer)
-   - [8.7 Adaptive Load Shedding (`priority: 'low'`) & API Deprecation (`sunset`)](#87-adaptive-load-shedding-priority-low--api-deprecation-sunset)
-9. [Unified Linear WebSockets](#9-unified-linear-websockets)
-   - [9.1 Linear WebSocket Streams (`ws` & `for await`)](#91-linear-websocket-streams-ws--for-await)
-   - [9.2 Pub/Sub Topics & Cross-Protocol Messaging (`wire.publish`)](#92-pubsub-topics--cross-protocol-messaging-wirepublish)
-   - [9.3 WebSocket Options (`wsConfig`) & Session Auto-Kick](#93-websocket-options-wsconfig--session-auto-kick)
-10. [Streaming Uploads (`wire.multipart` & `rawBody`)](#10-streaming-uploads-wiremultipart--rawbody)
-11. [Decoupled Side Effects (`reactTo`)](#11-decoupled-side-effects-reactto)
-12. [Zero-Build Virtual ESM Client (`/@client.js`)](#12-zero-build-virtual-esm-client-clientjs)
-13. [Observability, Logging & Automated Testing](#13-observability-logging--automated-testing)
-    - [13.1 Custom Startup Messages & Access Logs (`message`, `onListen`, `accessLog`)](#131-custom-startup-messages--access-logs-message-onlisten-accesslog)
-    - [13.2 Error-Triggered Debug Trace (`wire.log.debug`) & `Server-Timing` (`wire.mark`)](#132-error-triggered-debug-trace-wirelogdebug--server-timing-wiremark)
-    - [13.3 Automated Test Synthesis (`synthesizeTests`)](#133-automated-test-synthesis-synthesizetests)
-    - [13.4 Production Error Snapshots & Local Replay (`snapshotOnError` & `replay`)](#134-production-error-snapshots--local-replay-snapshotonerror--replay)
-14. [Complete Ambient `wire` API Reference](#14-complete-ambient-wire-api-reference)
-15. [License](#15-license)
+3. [Step-by-Step Core Walkthrough](#3-step-by-step-core-walkthrough)
+   - [Step 1: Starting the Server (`serve`)](#step-1-starting-the-server-serve)
+   - [Step 2: How URL Routing Works & Your First `GET`](#step-2-how-url-routing-works--your-first-get)
+   - [Step 3: Reading URL Query Parameters (`?done=true`)](#step-3-reading-url-query-parameters-donetrue)
+   - [Step 4: Dynamic URL Segments (`$id`) & Type Rules (`param`)](#step-4-dynamic-url-segments-id--type-rules-param)
+   - [Step 5: Creating Data with a Simple `POST`](#step-5-creating-data-with-a-simple-post)
+   - [Step 6: Setting HTTP Status Codes & Errors (`wire.status` & `wire.abort`)](#step-6-setting-http-status-codes--errors-wirestatus--wireabort)
+   - [Step 7: Updating (`patch` / `'put|patch'`) & Deleting (`delete`)](#step-7-updating-patch--putpatch--deleting-delete)
+   - [Step 8: Returning HTML (`wire.html` & `wire.file`)](#step-8-returning-html-wirehtml--wirefile)
+   - [Step 9: Assembled CRUD Server](#step-9-assembled-crud-server)
+4. [Zero-Build Virtual ESM Client (`/@client.js`)](#4-zero-build-virtual-esm-client-clientjs)
+   - [4.1 Step 1: Importing `api` in Browser or Frontend Apps](#41-step-1-importing-api-in-browser-or-frontend-apps)
+   - [4.2 Step 2: Calling `GET`, `POST`, `PATCH`, `DELETE` & Typed Params](#42-step-2-calling-get-post-patch-delete--typed-params)
+   - [4.3 Step 3: Consuming SSE Streams & WebSockets on the Client](#43-step-3-consuming-sse-streams--websockets-on-the-client)
+5. [Static Routing, Redirects & Custom Error Pages](#5-static-routing-redirects--custom-error-pages)
+   - [5.1 Static File & Folder Routing (`serveStatic` & `static`)](#51-static-file--folder-routing-servestatic--static)
+   - [5.2 HTTP Redirects (`wire.redirect` & `redirect`)](#52-http-redirects-wireredirect--redirect)
+   - [5.3 Custom Error Pages (`404`, `401`, `403`, `500`, etc.)](#53-custom-error-pages-404-401-403-500-etc)
+6. [Server Configuration (`serve`)](#6-server-configuration-serve)
+   - [6.1 All `serve()` Options](#61-all-serve-options)
+   - [6.2 Server Instance Control (`port`, `url`, `fetch`, `close`)](#62-server-instance-control-port-url-fetch-close)
+7. [Domain-Tree Projection & Routing](#7-domain-tree-projection--routing)
+   - [7.1 Static, Dynamic, Typed, and Wildcard Segments](#71-static-dynamic-typed-and-wildcard-segments)
+   - [7.2 Automatic Route Matching Priority](#72-automatic-route-matching-priority)
+   - [7.3 Method Unions (`'put|patch'`) & Shorthand Leaf Functions](#73-method-unions-putpatch--shorthand-leaf-functions)
+   - [7.4 Handler Argument Order](#74-handler-argument-order)
+   - [7.5 Typed Route Parameters (`param`) — All Supported Types & Custom Formats](#75-typed-route-parameters-param--all-supported-types--custom-formats)
+8. [Response Formatting, HTML & Streaming](#8-response-formatting-html--streaming)
+   - [8.1 Automatic `Content-Type` Matrix](#81-automatic-content-type-matrix)
+   - [8.2 HTML Responses & XSS Protection (`wire.html`)](#82-html-responses--xss-protection-wirehtml)
+   - [8.3 File Streaming with `ETag` & Byte-Range (`wire.file`)](#83-file-streaming-with-etag--byte-range-wirefile)
+   - [8.4 Server-Sent Events (SSE) with Async Generators](#84-server-sent-events-sse-with-async-generators)
+   - [8.5 Sparse Fieldsets (`?fields=`) & Automatic Redaction (`redact`)](#85-sparse-fieldsets-fields--automatic-redaction-redact)
+9. [Security, Sessions & Traffic Control](#9-security-sessions--traffic-control)
+   - [9.1 Protecting Routes & Branches (`guard`)](#91-protecting-routes--branches-guard)
+   - [9.2 Lazy Encrypted Sessions (`wire.session` & `wire.sessions`)](#92-lazy-encrypted-sessions-wiresession--wiresessions)
+   - [9.3 Custom Session Store Interface (Redis / Database)](#93-custom-session-store-interface-redis--database)
+   - [9.4 Timing-Safe Webhook Verification (`webhook`)](#94-timing-safe-webhook-verification-webhook)
+   - [9.5 Rate Limiting (`limit` & `wire.cost`)](#95-rate-limiting-limit--wirecost)
+   - [9.6 CORS & Preflight Handling (`origins`)](#96-cors--preflight-handling-origins)
+10. [Caching, Validation & Resilience](#10-caching-validation--resilience)
+    - [10.1 Self-Invalidating Response Cache (`cache`)](#101-self-invalidating-response-cache-cache)
+    - [10.2 Request Coalescing (`coalesce`)](#102-request-coalescing-coalesce)
+    - [10.3 Idempotent Mutations (`idempotent`)](#103-idempotent-mutations-idempotent)
+    - [10.4 Declarative Input Validation (`expect`)](#104-declarative-input-validation-expect)
+    - [10.5 Automatic Rollbacks (`wire.undo`) & Dry-Runs (`X-Simulate`)](#105-automatic-rollbacks-wireundo--dry-runs-x-simulate)
+    - [10.6 Graceful Background Tasks (`wire.defer`)](#106-graceful-background-tasks-wiredefer)
+    - [10.7 Load Shedding (`priority: 'low'`) & Deprecation (`sunset`)](#107-load-shedding-priority-low--deprecation-sunset)
+11. [Linear WebSockets & Pub/Sub](#11-linear-websockets--pubsub)
+    - [11.1 Step 1: Minimal Echo WebSocket (`ws` & `for await`)](#111-step-1-minimal-echo-websocket-ws--for-await)
+    - [11.2 Step 2: Rooms & Pub/Sub Broadcasting (`socket.join`, `wire.publish`)](#112-step-2-rooms--pubsub-broadcasting-socketjoin-wirepublish)
+    - [11.3 Step 3: Guarded WebSockets & `wsConfig`](#113-step-3-guarded-websockets--wsconfig)
+12. [Streaming File Uploads (`wire.multipart` & `rawBody`)](#12-streaming-file-uploads-wiremultipart--rawbody)
+13. [Decoupled Side Effects (`reactTo`)](#13-decoupled-side-effects-reactto)
+14. [Logging, Debugging & Automated Testing](#14-logging-debugging--automated-testing)
+    - [14.1 Startup Messages & Access Logs (`message`, `onListen`, `accessLog`)](#141-startup-messages--access-logs-message-onlisten-accesslog)
+    - [14.2 Error-Triggered Debug Trace (`wire.log.debug`) & `Server-Timing` (`wire.mark`)](#142-error-triggered-debug-trace-wirelogdebug--server-timing-wiremark)
+    - [14.3 Automated Test Synthesis (`synthesizeTests`)](#143-automated-test-synthesis-synthesizetests)
+    - [14.4 Error Snapshots & Local Replay (`snapshotOnError` & `replay`)](#144-error-snapshots--local-replay-snapshotonerror--replay)
+15. [Complete Ambient `wire` API Reference](#15-complete-ambient-wire-api-reference)
+16. [License](#16-license)
 
 ---
 
 ## 1. Why servin?
 
-Traditional Node.js web frameworks (Express, Fastify, Hono, Koa) rely on sequential middleware pipelines that mutate shared `req` or `ctx` objects and bind handlers to string URL patterns. As codebases expand, this architecture introduces hidden state mutations, manual cache-invalidation plumbing, and separate event-driven subsystems for WebSockets.
+Conventional Node.js frameworks require you to bind handlers to string URLs, chain `(req, res, next)` middleware, manually parse and validate route parameters, and maintain separate client-side `fetch()` wrappers alongside separate WebSocket and cache-invalidation systems.
 
-`servin` replaces string routing and middleware chains with two cohesive primitives:
+`servin` replaces that boilerplate with two core concepts:
 
-1. **Domain-Tree Projection:** You define your backend as a standard nested JavaScript object. `servin` projects that object structure directly onto HTTP endpoints, SSE streams, WebSocket channels, and a zero-build frontend ES module (`/@client.js`).
-2. **Ambient `wire`:** Backed by Node.js `AsyncLocalStorage`, `wire` gives any function in your call stack direct access to headers, status codes, sessions, rollbacks, background tasks, and pub/sub broadcasts without passing `req` or `res` arguments around.
-
-| Capability               | Conventional Frameworks                                                                        | `servin`                                                                                                                     |
-| :----------------------- | :--------------------------------------------------------------------------------------------- | :--------------------------------------------------------------------------------------------------------------------------- |
-| **Route Definition**     | String paths (`app.get('/users/:id', ...)`).                                                   | Plain JS object tree (`users: { $id: param('int', { get(id) { ... } }) }`).                                                  |
-| **Parameter Validation** | Manual `Number(req.params.id)` + `Number.isNaN()` checks in every handler.                     | Declarative `param('int', branch)` validates before dispatch and passes typed values (`number`, `boolean`, `bigint`).        |
-| **Cache Invalidation**   | Manual cache key tracking and deletion across update/delete routes.                            | `cache: '5m'` caches `GET` responses and automatically purges node and parent caches on `POST`, `PUT`, `PATCH`, or `DELETE`. |
-| **Traffic Spikes**       | Concurrent requests execute redundant database queries unless custom locks are built.          | `coalesce: true` merges simultaneous identical `GET` requests into a single execution.                                       |
-| **Session Overhead**     | Global middleware parses cookies and queries stores on every request, including public routes. | **Lazy Proxy:** zero cookie decryption or store lookups unless `wire.session` is actually read or written.                   |
-| **WebSockets**           | Separate callback registration (`open`, `message`, `close`) detached from HTTP routes.         | Co-located `ws` method in the same domain tree using a linear `for await (const msg of socket)` loop.                        |
-| **Frontend Integration** | Hand-written `fetch()` wrappers or build-time OpenAPI code generators.                         | Native browser/ESM import from `/@client.js` with zero build step.                                                           |
+1. **Domain-Tree Projection:** You structure your backend as a plain nested JavaScript object. `servin` projects that tree directly onto HTTP endpoints, static assets, SSE streams, WebSockets, and a browser-ready ES module (`/@client.js`).
+2. **Ambient `wire`:** Powered by Node.js `AsyncLocalStorage`, `wire` lets any function read headers, set status codes, issue redirects, manage sessions, register rollbacks, or publish WebSocket messages without passing `req` or `res` arguments down the call stack.
 
 ---
 
 ## 2. Requirements & Installation
 
-- **Runtime:** Node.js `v20.0.0` or higher (uses native Web `Request`/`Response`, `WebSocket`, `AsyncLocalStorage`, and `node:test`).
-- **Dependencies:** Zero external runtime dependencies.
-- **Module System:** ES Modules (`"type": "module"` in `package.json`).
+- **Runtime:** Node.js `v20.0.0` or higher.
+- **Dependencies:** Zero external dependencies.
+- **Module Format:** ES Modules (`"type": "module"` in `package.json`).
 
 Install `servin`:
 
@@ -98,386 +97,336 @@ Install `servin`:
 npm install servin
 ```
 
----
+Verify your `package.json` includes `"type": "module"`:
 
-## 3. Step-by-Step Walkthrough
-
-### Step 1: Booting the Server (`serve`)
-
-Create a `server.js` file and call `serve()`. At its simplest, `serve()` binds an HTTP/WebSocket server to a port and prints a startup message:
-
-```javascript
-import { serve } from "servin";
-
-await serve({
-  port: 3000,
-  message: ({ port, url }) => `Server is running on port ${port} (${url})`,
-  api: {},
-});
-```
-
-Run `node server.js` and your server is live on `http://127.0.0.1:3000`.
-
----
-
-### Step 2: Understanding the URL Routing Paradigm & Adding `GET`
-
-In `servin`, **you never write URL strings**. Instead, nested keys inside the `api` object automatically project into URL path segments, while lowercase HTTP verb names (`get`, `post`, `put`, `patch`, `delete`) act as the endpoint handlers:
-
-```text
-JavaScript Object Tree                 Projected HTTP Endpoint
-─────────────────────────────────────────────────────────────────
-api: {
-  health: {
-    get() { ... }          ──────►     GET /health
-  },
-  tasks: {
-    get(query) { ... }     ──────►     GET /tasks  (and GET /tasks?done=false)
+```json
+{
+  "name": "my-servin-app",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js"
   }
 }
 ```
 
-Any plain object or array returned from `get()` is automatically serialized as `application/json` with status `200 OK`:
+---
+
+## 3. Step-by-Step Core Walkthrough
+
+### Step 1: Starting the Server (`serve`)
+
+Create `server.js` and call `serve()`. By default, it listens on `127.0.0.1:3000`:
 
 ```javascript
 import { serve } from "servin";
 
-const tasksDb = new Map([
-  [1, { id: 1, title: "Design domain tree", priority: "high", done: true }],
-  [
-    2,
-    {
-      id: 2,
-      title: "Write integration tests",
-      priority: "medium",
-      done: false,
-    },
-  ],
-]);
+await serve({
+  port: 3000,
+  api: {},
+});
+```
+
+You can customize the startup log message using `message`:
+
+```javascript
+import { serve } from "servin";
+
+await serve({
+  port: 3000,
+  message: ({ port }) => `Server is running on port ${port}`,
+  api: {},
+});
+```
+
+### Step 2: How URL Routing Works & Your First `GET`
+
+In `servin`, **you never write URL path strings**. Every object key inside `api` becomes a URL segment, and a lowercase HTTP verb (`get`, `post`, `put`, `patch`, `delete`) defines the handler:
+
+```text
+Object Tree                              HTTP Endpoint
+───────────────────────────────────────────────────────────────
+api: {
+  hello: {
+    get() { ... }            ──────►     GET /hello
+  },
+  tasks: {
+    get() { ... }            ──────►     GET /tasks
+  }
+}
+```
+
+Any plain object or array you `return` is automatically serialized as `application/json` (`200 OK`):
+
+```javascript
+import { serve } from "servin";
+
+const tasksDb = [
+  { id: 1, title: "Learn servin", done: true },
+  { id: 2, title: "Build an API", done: false },
+];
 
 await serve({
   port: 3000,
   api: {
-    // GET /health
-    health: {
-      get: () => ({ status: "ok" }),
+    // GET /hello
+    hello: {
+      get: () => ({ message: "Hello from servin!" }),
     },
 
-    // GET /tasks?done=false
+    // GET /tasks
     tasks: {
-      get(query) {
-        let list = [...tasksDb.values()];
-        if (query.done === "true") list = list.filter((t) => t.done);
-        if (query.done === "false") list = list.filter((t) => !t.done);
-        return list;
-      },
+      get: () => tasksDb,
     },
   },
 });
 ```
 
----
+### Step 3: Reading URL Query Parameters (`?done=true`)
 
-### Step 3: Dynamic & Typed URL Parameters (`$id` + `param`)
-
-To capture a dynamic segment in the URL, prefix a key with `$` (such as `$id`). Wrapping that branch with `param('int', ...)` guarantees two things before your handler even runs:
-
-1. **Automatic Filtering:** Non-integer URLs like `GET /tasks/abc` are rejected automatically (`404 Not Found`).
-2. **Automatic Type Coercion:** The `id` argument passed to `get(id)` is already a JavaScript `number` (`1`), not a string (`"1"`).
-
-```text
-JavaScript Object Tree                 Projected HTTP Endpoint
-─────────────────────────────────────────────────────────────────
-tasks: {
-  $id: param('int', {
-    get(id) { ... }        ──────►     GET /tasks/1   (id === 1 as number)
-  })                                   GET /tasks/abc (auto-rejected: 404)
-}
-```
-
-Use `wire.abort(status, message)` whenever you need to halt execution and send an HTTP error response:
+Every `get()` handler automatically receives a `query` object containing the URL search parameters:
 
 ```javascript
-import { serve, wire, param } from "servin";
-
-// Inside api.tasks:
-$id: param("int", {
-  // GET /tasks/:id
-  get(id) {
-    const task = tasksDb.get(id);
-    if (!task) wire.abort(404, `Task #${id} not found`);
-    return task;
-  },
-});
-```
-
----
-
-### Step 4: Creating Resources with `POST`, Validation & Rollbacks
-
-Add a `post(payload)` handler to `tasks` to handle `POST /tasks`. You can layer declarative safeguards directly onto the same object:
-
-- `expect`: Validates the incoming JSON body shape before execution and returns `422 Unprocessable Entity` on invalid input.
-- `idempotent: '10m'`: Prevents duplicate creation if a client retries a request with the same `Idempotency-Key` header.
-- `wire.undo(fn)`: Registers a rollback action that automatically undoes the database write if a later step throws an error—or if the client sends `X-Simulate: true` for a dry-run.
-- `wire.status(201)`: Sets the HTTP response status to `201 Created`.
-
-```javascript
-import { wire } from "servin";
-
-let nextId = 3;
-
-// Added directly inside api.tasks:
-const createTaskRules = {
-  expect: {
-    title: "string",
-    priority: ["low", "medium", "high"],
-    done: "boolean?",
-  },
-  idempotent: "10m",
-  post(payload) {
-    const id = nextId++;
-    const record = {
-      id,
-      title: payload.title,
-      priority: payload.priority,
-      done: payload.done ?? false,
-    };
-
-    tasksDb.set(id, record);
-    wire.undo(() => tasksDb.delete(id));
-    wire.status(201);
-    return record;
+const tasks = {
+  // GET /tasks?done=false
+  get(query) {
+    if (query.done === "true") {
+      return tasksDb.filter((t) => t.done);
+    }
+    if (query.done === "false") {
+      return tasksDb.filter((t) => !t.done);
+    }
+    return tasksDb;
   },
 };
 ```
 
----
+### Step 4: Dynamic URL Segments (`$id`) & Type Rules (`param`)
 
-### Step 5: Updating (`put|patch`), Deleting (`delete`) & Auto-Invalidating `cache`
+Prefix a key with `$` to capture a dynamic URL segment:
 
-Now let's complete the CRUD lifecycle inside `$id` and add `cache: '5m'` to both `tasks` and `$id`:
-
-- **Method Union (`'put|patch'`):** Handles both `PUT /tasks/:id` and `PATCH /tasks/:id` in one clean function, inspecting `wire.method` to distinguish full replacement from partial updates.
-- **Self-Invalidating Cache:** When `GET /tasks` or `GET /tasks/1` is called, responses are served from cache. As soon as `POST`, `PUT`, `PATCH`, or `DELETE` succeeds, `servin` automatically purges both the item cache and the parent list cache.
-
-```text
-Cache Invalidation Flow
-─────────────────────────────────────────────────────────────────
-GET /tasks      ──► Cached for 5m
-GET /tasks/1    ──► Cached for 5m
-PATCH /tasks/1  ──► Succeeds ──► Automatically purges BOTH caches!
+```javascript
+// Matches ANY string: /tasks/1, /tasks/abc, /tasks/hello
+const tasks = {
+  $id: {
+    get(id) {
+      return { rawId: id }; // `id` is always a string when untyped
+    },
+  },
+};
 ```
+
+To restrict a parameter to a specific type or pattern while keeping object keys as clean JavaScript identifiers, wrap the branch in **`param(rule, branch)`**. `param()` supports built-in types (`'int'`, `'number'`, `'float'`, `'bigint'`, `'uuid'`, `'alpha'`, `'alnum'`, `'slug'`, `'bool'`, `'boolean'`, `'string'`), native constructors (`Number`, `Boolean`, `BigInt`, `String`), regular expressions (`/^[A-Z]{3}-\d+$/`), custom functions, and named custom types from `serve({ types })`.
+
+```javascript
+import { param } from "servin";
+
+const tasks = {
+  // GET /tasks/1   -> matches! `id` is coerced to number `1`
+  // GET /tasks/abc -> automatically rejected with 404 Not Found
+  $id: param("int", {
+    get(id) {
+      return tasksDb.find((t) => t.id === id);
+    },
+  }),
+};
+```
+
+See [Section 7.5](#75-typed-route-parameters-param--all-supported-types--custom-formats) for every supported type and custom format option.
+
+### Direct Path Parameters on Route Nodes (`wire.params` & `wire.param(name)`)
+
+Read trailing path segments directly inside a route handler without creating a separate `$id` child branch.
+
+- `GET /profile?id=234` reads query parameters via `wire.url.searchParams.get('id')`.
+- `GET /profile/234` reads the trailing path segment directly via `wire.params.id` or `wire.param('id')`.
+
+````javascript
+import { serve, wire } from './index.js';
+
+await serve({
+  port: 3000,
+  api: {
+    profile: {
+      get() {
+        const id = wire.param('id'); // or wire.params.id
+        const queryId = wire.url.searchParams.get('id');
+        return { id, queryId };
+      }
+    }
+  }
+});
+
+### Step 5: Creating Data with a Simple `POST`
+
+Add a `post(payload)` method to handle `POST /tasks`. `servin` automatically parses the incoming JSON body and passes it as `payload`:
+
+```javascript
+let nextId = 3;
+
+const tasks = {
+  get: () => tasksDb,
+
+  // POST /tasks
+  post(payload) {
+    const newTask = {
+      id: nextId++,
+      title: payload.title,
+      done: false,
+    };
+    tasksDb.push(newTask);
+    return newTask;
+  },
+};
+````
+
+### Step 6: Setting HTTP Status Codes & Errors (`wire.status` & `wire.abort`)
+
+Import `wire` when you need to change the HTTP status code or stop a request with an error:
+
+- `wire.status(201)` sets the response status to `201 Created`.
+- `wire.abort(404, 'Message')` immediately stops execution and returns `{ "error": "Message" }` with status `404`.
 
 ```javascript
 import { wire, param } from "servin";
 
-const taskItemNode = param("int", {
-  cache: "5m",
+const tasks = {
+  post(payload) {
+    const newTask = { id: nextId++, title: payload.title, done: false };
+    tasksDb.push(newTask);
 
-  // GET /tasks/:id
+    wire.status(201); // Return 201 Created instead of 200
+    return newTask;
+  },
+
+  $id: param("int", {
+    get(id) {
+      const task = tasksDb.find((t) => t.id === id);
+      if (!task) wire.abort(404, `Task #${id} not found`);
+      return task;
+    },
+  }),
+};
+```
+
+### Step 7: Updating (`patch` / `'put|patch'`) & Deleting (`delete`)
+
+Add `patch` (or `'put|patch'` to handle both verbs in one function) and `delete` inside `$id`:
+
+```javascript
+const taskById = param("int", {
   get(id) {
-    const task = tasksDb.get(id);
+    const task = tasksDb.find((t) => t.id === id);
     if (!task) wire.abort(404, `Task #${id} not found`);
     return task;
   },
 
-  // PUT /tasks/:id & PATCH /tasks/:id
-  "put|patch"(id, payload) {
-    const existing = tasksDb.get(id);
-    if (!existing) wire.abort(404, `Task #${id} not found`);
-
-    const updated =
-      wire.method === "PATCH"
-        ? { ...existing, ...payload, id }
-        : {
-            id,
-            title: payload.title,
-            priority: payload.priority || "medium",
-            done: Boolean(payload.done),
-          };
-
-    tasksDb.set(id, updated);
-    return updated;
+  // PATCH /tasks/:id
+  patch(id, payload) {
+    const task = tasksDb.find((t) => t.id === id);
+    if (!task) wire.abort(404, `Task #${id} not found`);
+    Object.assign(task, payload);
+    return task;
   },
 
   // DELETE /tasks/:id
   delete(id) {
-    if (!tasksDb.has(id)) wire.abort(404, `Task #${id} not found`);
-    tasksDb.delete(id);
+    const idx = tasksDb.findIndex((t) => t.id === id);
+    if (idx === -1) wire.abort(404, `Task #${id} not found`);
+    tasksDb.splice(idx, 1);
     wire.status(204);
-    return null;
+    return null; // Sends empty 204 No Content
   },
 });
 ```
 
----
+### Step 8: Returning HTML (`wire.html` & `wire.file`)
 
-### Step 6: Decoupled Side Effects (`reactTo`) & Serving HTML (`wire.html`)
+By default, returning a plain `string` sends `text/plain` so user text cannot accidentally execute scripts. To serve HTML:
 
-Finally, you can attach decoupled observers via `reactTo()` and serve an HTML frontend via `wire.html` that imports your backend tree directly from `/@client.js` with zero `fetch()` boilerplate:
+**Option A — Inline HTML string with `wire.html`:**
 
 ```javascript
-import { wire, reactTo } from "servin";
-
-// Runs automatically after tasks.post succeeds (skipped during X-Simulate dry-runs)
-reactTo(tasks.post, ({ output }) => {
-  wire.log.info(`Created task #${output.id}: ${output.title}`);
-});
-
-// GET /home -> serves an HTML page with auto-escaped variables
 const home = {
-  get() {
-    return wire.html`
-      <!doctype html>
-      <html lang="en">
-      <head>
-        <meta charset="utf-8">
-        <title>servin Tasks</title>
-      </head>
-      <body>
-        <h1>Tasks (${tasksDb.size})</h1>
-        <ul id="list"></ul>
-        <script type="module">
-          import { api } from '/@client.js';
-          const items = await api.tasks.get();
-          document.getElementById('list').innerHTML = items
-            .map((t) => \`<li>[\${t.priority}] \${t.title}</li>\`)
-            .join('');
-        </script>
-      </body>
-      </html>
-    `;
+  get: () => wire.html("<h1>Welcome to Task Manager</h1>"),
+};
+```
+
+**Option B — Tagged template ``wire.html`...` `` (auto-escapes variables against XSS):**
+
+```javascript
+const greet = {
+  $name: {
+    get(name) {
+      return wire.html`<h1>Hello, ${name}!</h1>`;
+    },
   },
 };
 ```
 
----
-
-### Step 7: Complete Assembled Application
-
-Putting Steps 1 through 6 together produces a clean, self-contained application:
+**Option C — Streaming an HTML file from disk with `wire.file`:**
 
 ```javascript
-import { serve, wire, param, reactTo } from "servin";
+const about = {
+  get: () => wire.file("./pages/about.html"),
+};
+```
 
-const tasksDb = new Map([
-  [1, { id: 1, title: "Design domain tree", priority: "high", done: true }],
-  [
-    2,
-    {
-      id: 2,
-      title: "Write integration tests",
-      priority: "medium",
-      done: false,
-    },
-  ],
-]);
+### Step 9: Assembled CRUD Server
+
+Combining Steps 1–8 gives you a complete, readable CRUD server:
+
+```javascript
+import { serve, wire, param } from "servin";
+
+const tasksDb = [
+  { id: 1, title: "Learn servin", done: true },
+  { id: 2, title: "Build an API", done: false },
+];
 let nextId = 3;
 
 const tasks = {
-  cache: "5m",
-
-  // GET /tasks?done=false
   get(query) {
-    let list = [...tasksDb.values()];
-    if (query.done === "true") list = list.filter((t) => t.done);
-    if (query.done === "false") list = list.filter((t) => !t.done);
-    return list;
+    if (query.done === "true") return tasksDb.filter((t) => t.done);
+    if (query.done === "false") return tasksDb.filter((t) => !t.done);
+    return tasksDb;
   },
 
-  // POST /tasks
-  expect: {
-    title: "string",
-    priority: ["low", "medium", "high"],
-    done: "boolean?",
-  },
-  idempotent: "10m",
   post(payload) {
-    const id = nextId++;
-    const record = {
-      id,
-      title: payload.title,
-      priority: payload.priority,
-      done: payload.done ?? false,
-    };
-    tasksDb.set(id, record);
-    wire.undo(() => tasksDb.delete(id));
+    const newTask = { id: nextId++, title: payload.title, done: false };
+    tasksDb.push(newTask);
     wire.status(201);
-    return record;
+    return newTask;
   },
 
-  // /tasks/:id (integer-only)
   $id: param("int", {
-    cache: "5m",
-
     get(id) {
-      const task = tasksDb.get(id);
+      const task = tasksDb.find((t) => t.id === id);
       if (!task) wire.abort(404, `Task #${id} not found`);
       return task;
     },
 
-    "put|patch"(id, payload) {
-      const existing = tasksDb.get(id);
-      if (!existing) wire.abort(404, `Task #${id} not found`);
-
-      const updated =
-        wire.method === "PATCH"
-          ? { ...existing, ...payload, id }
-          : {
-              id,
-              title: payload.title,
-              priority: payload.priority || "medium",
-              done: Boolean(payload.done),
-            };
-
-      tasksDb.set(id, updated);
-      return updated;
+    patch(id, payload) {
+      const task = tasksDb.find((t) => t.id === id);
+      if (!task) wire.abort(404, `Task #${id} not found`);
+      Object.assign(task, payload);
+      return task;
     },
 
     delete(id) {
-      if (!tasksDb.has(id)) wire.abort(404, `Task #${id} not found`);
-      tasksDb.delete(id);
+      const idx = tasksDb.findIndex((t) => t.id === id);
+      if (idx === -1) wire.abort(404, `Task #${id} not found`);
+      tasksDb.splice(idx, 1);
       wire.status(204);
       return null;
     },
   }),
 };
 
-reactTo(tasks.post, ({ output }) => {
-  wire.log.info(`Created task #${output.id}: ${output.title}`);
-});
-
-const home = {
-  get() {
-    return wire.html`
-      <!doctype html>
-      <html lang="en">
-      <head>
-        <meta charset="utf-8">
-        <title>servin Tasks</title>
-      </head>
-      <body>
-        <h1>Tasks (${tasksDb.size})</h1>
-        <ul id="list"></ul>
-        <script type="module">
-          import { api } from '/@client.js';
-          const items = await api.tasks.get();
-          document.getElementById('list').innerHTML = items
-            .map((t) => \`<li>[\${t.priority}] \${t.title}</li>\`)
-            .join('');
-        </script>
-      </body>
-      </html>
-    `;
-  },
-};
-
 await serve({
   port: 3000,
-  message: ({ port, url }) => `Server is running on port ${port} (${url})`,
+  message: ({ port }) => `Server is running on port ${port}`,
   api: {
-    home,
+    home: { get: () => wire.html("<h1>Task Manager</h1>") },
     tasks,
   },
 });
@@ -485,169 +434,411 @@ await serve({
 
 ---
 
-## 4. Server Configuration (`serve`)
+## 4. Zero-Build Virtual ESM Client (`/@client.js`)
 
-`serve(config)` compiles your domain tree, binds the HTTP and WebSocket servers, registers graceful shutdown hooks (`SIGINT` and `SIGTERM`), and resolves once the server is listening.
+Because `servin` compiles your `api` tree at startup, it automatically serves **`GET /@client.js`**—a lightweight, zero-dependency ES module that mirrors your exact backend domain structure.
 
-### 4.1 Configuration Options Reference
+Frontend code (vanilla HTML `<script type="module">`, React, Vue, Svelte, or Vite) can import `api` directly from `/@client.js` **without writing `fetch()`, URL strings, JSON serialization, or build-step code generators**.
 
-| Option            | Type                          | Default                         | Description                                                                                                                                                   |
-| :---------------- | :---------------------------- | :------------------------------ | :------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `port`            | `number`                      | `3000`                          | TCP port to listen on. Pass `0` to let the OS assign an available ephemeral port.                                                                             |
-| `host`            | `string`                      | `'127.0.0.1'`                   | Network interface to bind (use `'0.0.0.0'` for containers/external access).                                                                                   |
-| `api`             | `object`                      | `{}`                            | The root domain tree defining all HTTP routes, SSE streams, and WebSocket endpoints.                                                                          |
-| `types`           | `object`                      | `{}`                            | Dictionary of named custom parameter rules (`RegExp` or validator functions) usable via `param('typeName', branch)`.                                          |
-| `session`         | `object \| null`              | `null`                          | Enables encrypted lazy sessions. Requires `{ secret: string }`. See [Section 7.2](#72-lazy-reactive-sessions-wiresession--multi-device-control-wiresessions). |
-| `origins`         | `string[]`                    | `undefined`                     | Allowed CORS origins (e.g., `['https://app.example.com']` or `['*']`). Automatically handles `OPTIONS` preflight requests and credentials.                    |
-| `redact`          | `string[]`                    | `undefined`                     | Wildcard key patterns (e.g., `['password*', '*.secret', 'token']`) stripped recursively from all JSON responses.                                              |
-| `message`         | `string \| function \| false` | `'[servin] listening on <url>'` | Custom startup log message. Accepts a string, `({ port, host, url }) => string`, or `false` to suppress.                                                      |
-| `onListen`        | `function`                    | `undefined`                     | Sync or async callback `({ port, host, url }) => void` executed right after the port opens.                                                                   |
-| `accessLog`       | `boolean \| function`         | `true`                          | Logs every HTTP and WebSocket request. Pass `false` to disable, or `(info) => string \| null` to customize/filter output.                                     |
-| `silent`          | `boolean`                     | `false`                         | Suppresses both the startup message and access logs.                                                                                                          |
-| `lagThresholdMs`  | `number`                      | `60`                            | Event-loop p95 latency threshold (in milliseconds) before `priority: 'low'` routes shed load with `503`.                                                      |
-| `synthesizeTests` | `string`                      | `undefined`                     | File path (e.g., `'./tests/api.test.js'`) where verified request/response pairs are automatically written as `node:test` suites.                              |
-| `snapshotOnError` | `string`                      | `undefined`                     | Directory path (e.g., `'./snapshots'`) where failing `500` request snapshots are saved for local `replay()`.                                                  |
-| `onError`         | `function`                    | `undefined`                     | Custom unhandled error formatter `(err, { req }) => Response \| object`.                                                                                      |
+### 4.1 Step 1: Importing `api` in Browser or Frontend Apps
 
-### 4.2 Server Instance API
+**Same-origin HTML page served by `servin`:**
 
-`await serve(config)` returns a control object:
+```html
+<!doctype html>
+<html>
+  <body>
+    <ul id="list"></ul>
+
+    <script type="module">
+      import { api } from "/@client.js";
+
+      const tasks = await api.tasks.get();
+      document.getElementById("list").innerHTML = tasks
+        .map((t) => `<li>${t.title}</li>`)
+        .join("");
+    </script>
+  </body>
+</html>
+```
+
+**Separate frontend dev server (e.g., Vite on `:5173` calling `servin` on `:3000`):**
+
+```javascript
+import { api } from "http://localhost:3000/@client.js";
+
+const tasks = await api.tasks.get();
+
+// GET with custom header
+const profile = await api.profile.get(authHeaders);
+
+// GET with query + header
+const orders = await api.v1.orders.get({ page: 1 }, authHeaders);
+
+// POST with body + header
+const created = await api.v1.orders.post(
+  { item: "Keyboard", qty: 2 },
+  authHeaders,
+);
+```
+
+### 4.2 Step 2: Calling `GET`, `POST`, `PATCH`, `DELETE` & Typed Params
+
+Every method call on `api` matches the exact shape of your server's `api` tree and automatically includes credentials (`HttpOnly` session cookies) and JSON headers:
+
+```javascript
+import { api } from "/@client.js";
+
+// 1. GET /tasks?done=false
+const pending = await api.tasks.get({ done: "false" });
+
+// 2. POST /tasks
+const created = await api.tasks.post({ title: "Ship v1.0" });
+
+// 3. GET /tasks/1 (passes `1` into `$id`)
+const single = await api.tasks.$id.get(1);
+
+// 4. PATCH /tasks/1 (first arg is `$id`, second arg is JSON body)
+const updated = await api.tasks.$id.patch(1, { done: true });
+
+// 5. DELETE /tasks/1 (returns `null` on 204 No Content)
+await api.tasks.$id.delete(1);
+```
+
+### 4.3 Step 3: Consuming SSE Streams & WebSockets on the Client
+
+`/@client.js` also translates Server-Sent Events and WebSockets into standard JavaScript `for await...of` async iterators:
+
+```javascript
+import { api } from "/@client.js";
+
+// 1. Consuming an SSE endpoint (async *get())
+for await (const tick of api.clock.get()) {
+  console.log("Server tick:", tick);
+}
+
+// 2. Consuming a WebSocket endpoint (async ws(room, socket))
+const room = api.chat.$room.ws("general");
+room.send({ text: "Hello everyone!" });
+
+for await (const message of room) {
+  console.log("Chat message:", message);
+}
+```
+
+---
+
+## 5. Static Routing, Redirects & Custom Error Pages
+
+### 5.1 Static File & Folder Routing (`serveStatic` & `static`)
+
+`servin` serves static files and entire directories with automatic MIME detection, `ETag` (`304 Not Modified`), `Byte-Range` streaming (`206 Partial Content`), directory `index.html` resolution, and built-in path-traversal protection.
+
+**Step 1 — Mount static folders or single files via `serve({ static })`:**
+
+```javascript
+import { serve } from "servin";
+
+await serve({
+  port: 3000,
+  static: {
+    "/assets": "./public/assets", // Serves entire directory at /assets/*
+    "/favicon.ico": "./public/favicon.ico", // Serves a single file at /favicon.ico
+  },
+  api: {
+    health: { get: () => ({ ok: true }) },
+  },
+});
+```
+
+**Step 2 — Mount static directories inside the `api` tree with `serveStatic()` (and combine with `guard()`):**
+
+```javascript
+import { serve, guard, serveStatic } from "servin";
+
+await serve({
+  port: 3000,
+  api: {
+    // Public documentation folder with Cache-Control header
+    docs: serveStatic("./public/docs", {
+      index: "index.html",
+      cacheControl: "public, max-age=3600",
+    }),
+
+    // Protected downloads folder requiring login
+    downloads: guard(
+      requireAuth,
+      serveStatic("./storage/private", {
+        dotfiles: "deny", // Returns 403 Forbidden for .env, .git, etc.
+      }),
+    ),
+  },
+});
+```
+
+**Step 3 — Single-Page Application (SPA) fallback mode:**
+
+Set `spa: true` so client-side routes (like `/app/settings/profile`) automatically fall back to `index.html` when no matching asset file exists:
+
+```javascript
+const api = {
+  app: serveStatic("./dist", {
+    spa: true,
+    index: "index.html",
+  }),
+};
+```
+
+**All `serveStatic(targetPath, options)` options:**
+
+| Option         | Type                            | Default        | Description                                                                               |
+| :------------- | :------------------------------ | :------------- | :---------------------------------------------------------------------------------------- |
+| `index`        | `string \| false`               | `'index.html'` | Default file served when a directory URL is requested. Set `false` to disable.            |
+| `dotfiles`     | `'ignore' \| 'deny' \| 'allow'` | `'ignore'`     | How files/folders starting with `.` (e.g., `.env`) are handled (`404`, `403`, or served). |
+| `cacheControl` | `string \| null`                | `null`         | Optional `Cache-Control` response header (e.g., `'public, max-age=86400'`).               |
+| `spa`          | `boolean`                       | `false`        | Falls back to `index` (or `fallback`) when a requested sub-path is not found.             |
+| `fallback`     | `string \| null`                | `null`         | Custom fallback HTML file path when `spa: true` is enabled.                               |
+
+### 5.2 HTTP Redirects (`wire.redirect` & `redirect`)
+
+**1. Declarative redirects in the `api` tree (`redirect(target, status = 301)`):**
+
+```javascript
+import { serve, param, redirect } from "servin";
+
+await serve({
+  port: 3000,
+  api: {
+    // Static permanent redirect: GET /old-blog -> 301 Location: /articles
+    "old-blog": redirect("/articles", 301),
+
+    // Dynamic redirect using extracted route parameters & query:
+    promo: {
+      $code: param(
+        "alnum",
+        redirect((code, query) => {
+          const ref = query.ref ? `&ref=${encodeURIComponent(query.ref)}` : "";
+          return `/checkout?voucher=${code}${ref}`;
+        }, 302),
+      ),
+    },
+  },
+});
+```
+
+**2. Imperative redirects inside handlers (`wire.redirect(location, status = 302)`):**
+
+Calling `wire.redirect()` immediately halts handler execution, **commits any newly created/updated `wire.session` cookies**, and sends the redirect response:
+
+```javascript
+const auth = {
+  login: {
+    async post({ email }) {
+      await wire.session.rotate();
+      wire.session.user = email;
+
+      // Session cookie is automatically attached to this 302 redirect response
+      wire.redirect("/dashboard");
+    },
+  },
+};
+```
+
+### 5.3 Custom Error Pages (`404`, `401`, `403`, `500`, etc.)
+
+Configure `errors` in `serve()` to customize responses for specific HTTP status codes (`404`, `401`, `403`, `405`, `422`, `429`, `500`), status ranges (`'4xx'`, `'5xx'`), or `default`.
+
+An error handler can return **`wire.html`**, **`wire.file()`**, a **JSON object**, a **plain string**, or trigger **`wire.redirect()`**:
+
+```javascript
+import { serve, wire, guard } from "servin";
+
+const requireAdmin = () => {
+  if (!wire.session.user) wire.abort(401, "Authentication required");
+  if (wire.session.role !== "admin")
+    wire.abort(403, "Administrator access required");
+};
+
+await serve({
+  port: 3000,
+  session: { secret: "replace-with-32-char-secret-key!!" },
+
+  errors: {
+    // 1. Custom 404 Not Found HTML page
+    404({ path }) {
+      return wire.html`
+        <h1>404 — Page Not Found</h1>
+        <p>No route matches <code>${path}</code>.</p>
+        <a href="/">Back to Home</a>
+      `;
+    },
+
+    // 2. Custom 401 Unauthorized: redirect browsers to /login, return JSON for API clients
+    401({ message }) {
+      const accept = wire.headers.get("accept") || "";
+      if (accept.includes("text/html")) {
+        return wire.redirect("/login");
+      }
+      return { error: "Unauthorized", reason: message };
+    },
+
+    // 3. Custom 403 Forbidden: stream a static HTML file while keeping status 403
+    403: wire.file("./pages/403.html"),
+
+    // 4. Custom 500 Internal Server Error
+    500() {
+      return wire.html`<h1>500 — Something went wrong on our end</h1>`;
+    },
+  },
+
+  api: {
+    admin: guard(requireAdmin, {
+      get: () => wire.html`<h1>Welcome, Admin ${wire.session.user}</h1>`,
+    }),
+  },
+});
+```
+
+**Context passed to custom error functions `errors[code](ctx)`:**
+
+| Property  | Type            | Description                                                                 |
+| :-------- | :-------------- | :-------------------------------------------------------------------------- |
+| `status`  | `number`        | HTTP status code being returned (e.g., `404`, `401`, `403`, `500`).         |
+| `message` | `string`        | Default error message (e.g., the message passed to `wire.abort(401, msg)`). |
+| `details` | `any`           | Validation field details when `status === 422`.                             |
+| `path`    | `string`        | Request URL pathname (e.g., `'/admin'`).                                    |
+| `method`  | `string`        | Uppercase HTTP method (e.g., `'GET'`).                                      |
+| `error`   | `Error \| null` | Original thrown error instance if available.                                |
+| `wire`    | `object`        | Active `wire` ambient context handle.                                       |
+
+---
+
+## 6. Server Configuration (`serve`)
+
+### 6.1 All `serve()` Options
+
+| Option            | Type                                   | Default                       | Description                                                                               |
+| :---------------- | :------------------------------------- | :---------------------------- | :---------------------------------------------------------------------------------------- |
+| `port`            | `number`                               | `3000`                        | TCP port to listen on. Pass `0` for a random OS-assigned port.                            |
+| `host`            | `string`                               | `'127.0.0.1'`                 | Host interface to bind (use `'0.0.0.0'` inside Docker/containers).                        |
+| `api`             | `object`                               | `{}`                          | Root domain object defining all routes.                                                   |
+| `static`          | `string \| StaticDescriptor \| object` | `null`                        | Root or prefix-mapped static files/directories (e.g., `{ '/assets': './public' }`).       |
+| `errors`          | `object`                               | `undefined`                   | Custom status handlers (`404`, `401`, `403`, `500`, `'4xx'`, `'5xx'`, `default`).         |
+| `types`           | `object`                               | `{}`                          | Named custom parameter types usable via `param('typeName', branch)`.                      |
+| `session`         | `object \| null`                       | `null`                        | Session config `{ secret, ttl, cookieName, rolling, secure, sameSite, store }`.           |
+| `origins`         | `string[]`                             | `undefined`                   | Allowed CORS origins (e.g., `['https://app.example.com']` or `['*']`).                    |
+| `redact`          | `string[]`                             | `undefined`                   | Wildcard keys (e.g., `['password*', '*.secret']`) stripped from all JSON responses.       |
+| `message`         | `string \| function \| false`          | `"[servin] listening on ..."` | Custom startup log message or `false` to silence startup output.                          |
+| `onListen`        | `function`                             | `undefined`                   | Sync/async callback `({ port, host, url }) => void` run when listening starts.            |
+| `accessLog`       | `boolean \| function`                  | `true`                        | Enables per-request access logs or accepts a custom formatter `(info) => string \| null`. |
+| `silent`          | `boolean`                              | `false`                       | Disables both startup and access logs.                                                    |
+| `lagThresholdMs`  | `number`                               | `60`                          | Event-loop p95 delay threshold (ms) before `priority: 'low'` routes return `503`.         |
+| `synthesizeTests` | `string`                               | `undefined`                   | File path where verified requests are recorded as `node:test` test cases.                 |
+| `snapshotOnError` | `string`                               | `undefined`                   | Directory where `500` error snapshots are saved for local `replay()`.                     |
+| `onError`         | `function`                             | `undefined`                   | Custom unhandled error formatter `(err, { req }) => Response \| object`.                  |
+
+### 6.2 Server Instance Control (`port`, `url`, `fetch`, `close`)
 
 ```javascript
 const app = await serve({
   port: 0,
-  api: { health: { get: () => ({ ok: true }) } },
+  api: { ping: { get: () => ({ pong: true }) } },
 });
 
-console.log(app.port); // Actual bound port (useful when port: 0 is used)
-console.log(app.url); // e.g. "http://127.0.0.1:54321"
+console.log(app.port); // Actual assigned port
+console.log(app.url); // e.g. "http://127.0.0.1:51234"
 
-// Invoke the HTTP router directly in-memory without opening a network socket:
-const res = await app.fetch(new Request("http://localhost/health"));
-console.log(await res.json()); // { ok: true }
+// Call routes directly in-memory without network overhead:
+const res = await app.fetch(new Request("http://localhost/ping"));
+console.log(await res.json()); // { pong: true }
 
-// Gracefully close the HTTP server and await all pending wire.defer() background tasks:
+// Shut down server and wait for pending wire.defer() tasks:
 await app.close();
 ```
 
 ---
 
-## 5. Domain-Tree Projection & Routing
+## 7. Domain-Tree Projection & Routing
 
-### 5.1 Static, Dynamic, Typed, and Wildcard Segments
+### 7.1 Static, Dynamic, Typed, and Wildcard Segments
 
-Every property key inside `api` corresponds to a URL path segment:
-
-- **Static segment (`users`, `summary`):** Matches the exact path segment (`/users/summary`).
-- **Untyped dynamic parameter (`$slug`, `$username`):** Matches any single non-empty URL segment and decodes URI components (`/posts/:slug`).
-- **Typed dynamic parameter (`$id: param(...)`):** Validates and coerces the URL segment according to the specified rule. If validation fails, the route is skipped (resulting in `404 Not Found` or falling back to a lower-priority sibling route).
-- **Wildcard catch-all (`$path`):** Matches all remaining trailing path segments joined with `/` (`/files/docs/2026/report.pdf` -> `path = "docs/2026/report.pdf"`).
+- **Static (`users`):** Matches `/users` literally.
+- **Dynamic (`$username`):** Matches any single URL segment as a string.
+- **Typed Dynamic (`$id: param(...)`):** Validates and converts the segment type before matching.
+- **Wildcard (`$path`):** Captures all remaining trailing path segments joined by `/`.
 
 ```javascript
-import { serve, param } from "servin";
-
-await serve({
-  port: 3000,
-  api: {
-    files: {
-      // GET /files/a/b/c.txt -> path = "a/b/c.txt"
-      $path: {
-        get(path) {
-          return { requestedPath: path };
-        },
-      },
-    },
-    users: {
-      // 1. Static route: GET /users/me
-      me: {
-        get: () => ({ id: 0, username: "current_user" }),
-      },
-      // 2. Typed int route: GET /users/42
-      $id: param("int", {
-        get(id) {
-          return { id, type: typeof id }; // { id: 42, type: "number" }
-        },
-      }),
-      // 3. Fallback untyped route: GET /users/nadia
-      $username: {
-        get(username) {
-          return { username, type: typeof username }; // { username: "nadia", type: "string" }
-        },
-      },
-    },
+const api = {
+  users: {
+    me: { get: () => "static" }, // GET /users/me
+    $id: param("int", { get: (id) => ({ id }) }), // GET /users/42
+    $username: { get: (u) => ({ username: u }) }, // GET /users/nadia
   },
-});
+  files: {
+    $path: { get: (path) => ({ path }) }, // GET /files/docs/2026/a.pdf
+  },
+};
 ```
 
-### 5.2 Automatic Route Matching Priority
+### 7.2 Automatic Route Matching Priority
 
-Regardless of property definition order in your JavaScript objects, `servin` sorts compiled routes deterministically per segment from highest to lowest specificity:
+Regardless of object key order, `servin` always matches segments from most specific to least specific:
 
-1. **Priority 0 — Static segments** (`me`, `add`, `summary`)
-2. **Priority 1 — Typed dynamic parameters** (`$id: param(...)`)
-3. **Priority 2 — Untyped dynamic parameters** (`$username`)
-4. **Priority 3 — Wildcard catch-all segments** (`$path`)
+1. **Static segments** (`me`)
+2. **Typed parameters** (`$id: param(...)`)
+3. **Untyped parameters** (`$username`)
+4. **Wildcard catch-all** (`$path` or `serveStatic` mount)
 
-### 5.3 HTTP Methods, Method Unions & Shorthand Leaf Functions
+### 7.3 Method Unions (`'put|patch'`) & Shorthand Leaf Functions
 
-Inside any route object, define handlers using lowercase HTTP verb keys:
-
-- Standard HTTP verbs: `get`, `post`, `put`, `patch`, `delete`, `head`, `options`
-- WebSocket upgrade handler: `ws`
-- **Method Unions:** Combine multiple verbs with `|` to share a single handler cleanly:
+**1. Method Unions:** Share one handler across multiple HTTP verbs using `|`:
 
 ```javascript
-const articles = {
+const items = {
   $id: param("int", {
-    async "put|patch"(id, payload) {
-      const isPartial = wire.method === "PATCH";
-      return { id, isPartial, payload };
+    "put|patch"(id, payload) {
+      return { methodUsed: wire.method, id, payload };
     },
   }),
 };
 ```
 
-- **Shorthand Leaf Functions:** Assigning a function directly to a non-verb key creates a leaf route automatically:
-  - A standard function (`fn`) maps to **`POST`** on that path.
-  - An async generator function (`async *fn()`) maps to **`GET`** streaming Server-Sent Events (`text/event-stream`).
+**2. Shorthand Leaf Functions:** Assigning a function directly to a non-verb key creates a route automatically:
+
+- Normal function $\rightarrow$ **`POST`**
+- Async generator (`async *`) $\rightarrow$ **`GET`** (SSE stream)
 
 ```javascript
-const system = {
-  // Maps directly to POST /system/reboot
-  reboot(payload) {
-    return { rebooting: true, reason: payload.reason };
+const actions = {
+  // POST /actions/sync
+  sync(payload) {
+    return { synced: true, payload };
   },
 
-  // Maps directly to GET /system/metrics (SSE stream)
-  async *metrics() {
-    yield { cpu: 12 };
-    yield { cpu: 18 };
+  // GET /actions/events (SSE stream)
+  async *events() {
+    yield { status: "started" };
+    yield { status: "finished" };
   },
 };
 ```
 
-### 5.4 Predictable Handler Argument Mapping
+### 7.4 Handler Argument Order
 
-`servin` passes arguments to your handler functions in a strict, predictable order:
+Arguments are always passed in this order:
 
-1. **Extracted URL parameters** (`$...` and `$path`) from left to right, already decoded and type-coerced.
-2. **Parsed `payload`** (for body-bearing methods `POST`, `PUT`, `PATCH`, unless `rawBody: true` or streaming `multipart/form-data` is used).
-3. **`query` object** (`Record<string, string>`) parsed from `url.searchParams` as the final argument.
-4. For **`ws`** handlers: `(...extractedParams, socket)`.
+1. URL parameters (`$...`) from left to right.
+2. Parsed `payload` (only for `POST`, `PUT`, `PATCH`).
+3. `query` object (`url.searchParams`) as the final argument.
 
 ```javascript
+// PATCH /orgs/10/members/550e8400-e29b-41d4-a716-446655440000?notify=true
 const orgs = {
   $orgId: param("int", {
     members: {
       $memberId: param("uuid", {
-        // 1. orgId (number), 2. memberId (string), 3. payload (object), 4. query (object)
         patch(orgId, memberId, payload, query) {
-          return { orgId, memberId, payload, notify: query.notify === "true" };
-        },
-
-        // 1. orgId (number), 2. memberId (string), 3. query (object)
-        get(orgId, memberId, query) {
-          return { orgId, memberId, includeRoles: query.roles === "1" };
+          return { orgId, memberId, payload, notify: query.notify };
         },
       }),
     },
@@ -655,57 +846,74 @@ const orgs = {
 };
 ```
 
-### 5.5 Typed Route Parameters (`param`) — Complete Type Guide
+### 7.5 Typed Route Parameters (`param`) — All Supported Types & Custom Formats
 
-Use `param(rule, branch)` on any `$`-prefixed key so your object keys remain clean JavaScript identifiers without string quotes. `param()` accepts **five kinds of rules**:
+`param(rule, branch)` keeps object keys as clean JavaScript identifiers without string quotes. When a URL segment does not satisfy `rule`, `servin` treats that route branch as non-matching (falling through to other routes or returning `404 Not Found`). When it does satisfy `rule`, `servin` passes the **converted value** directly into your handler.
+
+You can supply `rule` in **five ways**:
 
 #### A. Built-in String Type Names
 
-| Rule String | Validation Rule                                       | Coerced JS Type      | Matches Example                        | Rejects (`404`) Example               |
-| :---------- | :---------------------------------------------------- | :------------------- | :------------------------------------- | :------------------------------------ |
-| `'int'`     | Non-negative safe integer (`/^\d+$/`)                 | `number`             | `0`, `42`, `1005`                      | `-1`, `3.14`, `42abc`, `abc`          |
-| `'number'`  | Signed integer or decimal (`/^-?\d+(?:\.\d+)?$/`)     | `number`             | `-10`, `42`, `19.99`                   | `10px`, `NaN`, `abc`                  |
-| `'float'`   | Alias for `'number'`                                  | `number`             | `-0.5`, `12.34`                        | `abc`                                 |
-| `'bigint'`  | Arbitrary-precision signed integer (`/^-?\d+$/`)      | `bigint`             | `9007199254740993`                     | `12.5`, `abc`                         |
-| `'uuid'`    | Standard UUID v1–v5 (case-insensitive)                | `string` (lowercase) | `550e8400-e29b-41d4-a716-446655440000` | `not-a-uuid`, `12345`                 |
-| `'alpha'`   | ASCII letters only (`/^[a-zA-Z]+$/`)                  | `string`             | `en`, `Indonesia`                      | `en2`, `en-US`                        |
-| `'alnum'`   | ASCII letters and digits (`/^[a-zA-Z0-9]+$/`)         | `string`             | `v2026`, `user99`                      | `user-99`, `v2.0`                     |
-| `'slug'`    | Lowercase kebab-case (`/^[a-z0-9]+(?:-[a-z0-9]+)*$/`) | `string`             | `hello-world-2026`                     | `Hello_World`, `-leading`             |
-| `'bool'`    | `'true'`, `'1'`, `'false'`, `'0'` (case-insensitive)  | `boolean`            | `true`, `1`, `FALSE`, `0`              | `yes`, `no`, `2`                      |
-| `'boolean'` | Alias for `'bool'`                                    | `boolean`            | `true`, `false`                        | `maybe`                               |
-| `'string'`  | Any valid URI-decoded string                          | `string`             | `anything`                             | Invalid percent-encoding (`%E0%A4%A`) |
-
-#### B. Native JavaScript Constructors
-
-You can pass JavaScript built-in constructors directly:
-
-- `param(Number, branch)` — equivalent to `'number'` (coerces to `number`)
-- `param(Boolean, branch)` — equivalent to `'bool'` (coerces to `boolean`)
-- `param(BigInt, branch)` — equivalent to `'bigint'` (coerces to `bigint`)
-- `param(String, branch)` — equivalent to `'string'` (passes `string`)
-
-#### C. Inline `RegExp` Literals
-
-Pass any regular expression directly without string escaping:
+| Rule        | Validation                               | Coerced JS Type      | Example Match                          | Example Rejected (`404`) |
+| :---------- | :--------------------------------------- | :------------------- | :------------------------------------- | :----------------------- |
+| `'int'`     | Non-negative safe integer (`/^\d+$/`)    | `number`             | `0`, `42`                              | `-1`, `3.14`, `42abc`    |
+| `'number'`  | Signed integer or decimal                | `number`             | `-10`, `19.99`                         | `10px`, `abc`            |
+| `'float'`   | Alias for `'number'`                     | `number`             | `-0.5`, `12.34`                        | `abc`                    |
+| `'bigint'`  | Arbitrary-precision integer              | `bigint`             | `9007199254740993`                     | `12.5`, `abc`            |
+| `'uuid'`    | Standard UUID v1–v5                      | `string` (lowercase) | `550e8400-e29b-41d4-a716-446655440000` | `12345`, `not-uuid`      |
+| `'alpha'`   | Letters only (`a-z`, `A-Z`)              | `string`             | `Indonesia`                            | `id2`, `en-US`           |
+| `'alnum'`   | Letters and digits (`a-z`, `A-Z`, `0-9`) | `string`             | `v2026`                                | `v-2026`                 |
+| `'slug'`    | Lowercase kebab-case (`a-z`, `0-9`, `-`) | `string`             | `hello-world`                          | `Hello_World`            |
+| `'bool'`    | `'true'`, `'1'`, `'false'`, `'0'`        | `boolean`            | `true`, `1`, `0`                       | `yes`, `2`               |
+| `'boolean'` | Alias for `'bool'`                       | `boolean`            | `true`, `false`                        | `maybe`                  |
+| `'string'`  | Any URI-decoded string                   | `string`             | `anything`                             | Invalid `%` encoding     |
 
 ```javascript
-const catalog = {
-  // Matches /catalog/PRD-1042, rejects /catalog/prd-1042
-  $sku: param(/^[A-Z]{3}-\d{4}$/, {
-    get(sku) {
-      return { sku };
-    },
+const users = {
+  $id: param("int", {
+    get: (id) => ({ id, isNumber: typeof id === "number" }),
+  }),
+  $handle: param("slug", {
+    get: (handle) => ({ handle }),
   }),
 };
 ```
 
-#### D. Inline Validator & Transformer Functions
+#### B. Native JavaScript Constructors
 
-Pass a function `(raw: string) => parsedValue`. Returning `null`, `undefined`, `false`, or throwing an error rejects the route (`404`). Returning any other value passes that transformed value directly to your handler:
+Pass `Number`, `Boolean`, `BigInt`, or `String` directly:
+
+```javascript
+const posts = {
+  $id: param(Number, { get: (id) => ({ id }) }),
+  $published: param(Boolean, { get: (flag) => ({ published: flag }) }),
+  $ledgerId: param(BigInt, { get: (val) => ({ ledgerId: val.toString() }) }),
+};
+```
+
+#### C. Inline `RegExp` Literals (Custom Formats)
+
+Pass any `RegExp` literal directly for custom code formats, SKUs, or structured identifiers:
+
+```javascript
+const products = {
+  // Matches /products/SKU-1024, rejects /products/sku-1024 or /products/1024
+  $sku: param(/^[A-Z]{3}-\d{4}$/, {
+    get: (sku) => ({ sku }),
+  }),
+};
+```
+
+#### D. Custom Validator / Transformer Function
+
+Pass a function `(rawSegment) => parsedValue | null | undefined | false`:
+
+- Return any non-null, non-undefined value (other than `false`) to **accept** and pass that returned value to the handler.
+- Return `null`, `undefined`, or `false` (or throw an error) to **reject** (`404`).
 
 ```javascript
 const events = {
-  // Parses YYYY-MM-DD directly into a JavaScript Date instance
+  // Parses "YYYY-MM-DD" into a real Date instance
   $date: param(
     (raw) => {
       if (!/^\d{4}-\d{2}-\d{2}$/.test(raw)) return null;
@@ -713,10 +921,7 @@ const events = {
       return Number.isNaN(d.getTime()) ? null : d;
     },
     {
-      get(date) {
-        // `date` is already a valid Date object
-        return { iso: date.toISOString() };
-      },
+      get: (date) => ({ iso: date.toISOString() }),
     },
   ),
 };
@@ -724,13 +929,13 @@ const events = {
 
 #### E. Global Reusable Custom Types (`serve({ types })`)
 
-Register custom types once in `serve()` and reference them by name anywhere in your domain tree:
+Define named types once in `serve({ types })`—using either a `RegExp` or a validator function—and reference them by string name anywhere in your tree:
 
 ```javascript
 await serve({
   port: 3000,
   types: {
-    invoiceId: /^INV-\d{6}$/,
+    invoiceCode: /^INV-\d{6}$/,
     positiveInt: (raw) => {
       const n = Number(raw);
       return Number.isInteger(n) && n > 0 ? n : null;
@@ -738,14 +943,10 @@ await serve({
   },
   api: {
     invoices: {
-      $id: param("invoiceId", {
-        get: (id) => ({ invoice: id }),
-      }),
+      $code: param("invoiceCode", { get: (code) => ({ code }) }),
     },
     pages: {
-      $page: param("positiveInt", {
-        get: (page) => ({ page }),
-      }),
+      $page: param("positiveInt", { get: (page) => ({ page }) }),
     },
   },
 });
@@ -753,676 +954,515 @@ await serve({
 
 ---
 
-## 6. Automatic Response Formatting & HTML Rendering
+## 8. Response Formatting, HTML & Streaming
 
-### 6.1 Content-Type Resolution Matrix
+### 8.1 Automatic `Content-Type` Matrix
 
-`servin` inspects the return value of your handler and constructs the HTTP response automatically:
+| Return Value                    | Status            | `Content-Type`                     | Notes                                                       |
+| :------------------------------ | :---------------- | :--------------------------------- | :---------------------------------------------------------- |
+| Object / Array                  | `200`             | `application/json`                 | Applies `redact` and `?fields=` automatically.              |
+| `wire.html(...)`                | `200`             | `text/html; charset=utf-8`         | Sends rendered HTML.                                        |
+| `wire.file(path)`               | `200`/`206`/`304` | Auto from extension                | Streams file with `ETag` and `Range` support.               |
+| `string`                        | `200`             | `text/plain; charset=utf-8`        | Plain text (unless `Content-Type` header was set manually). |
+| `null` / `undefined`            | `204`             | _(none)_                           | Empty response body.                                        |
+| `async *generator()`            | `200`             | `text/event-stream; charset=utf-8` | Streams SSE `data: <json>\n\n` frames.                      |
+| `ReadableStream` / `Uint8Array` | `200`             | _(user-defined)_                   | Streams raw binary bytes.                                   |
+| Web `Response`                  | Custom            | Custom                             | Sent as-is.                                                 |
 
-| Handler Return Value            | Default HTTP Status   | `Content-Type` Header              | Behavior                                                                            |
-| :------------------------------ | :-------------------- | :--------------------------------- | :---------------------------------------------------------------------------------- |
-| Plain `Object` or `Array`       | `200`                 | `application/json; charset=utf-8`  | Applies `redact` rules and `?fields=` masks, then serializes to JSON.               |
-| `wire.html(...)`                | `200`                 | `text/html; charset=utf-8`         | Sends rendered HTML string.                                                         |
-| `wire.file(path)`               | `200` / `206` / `304` | Auto-detected from file extension  | Streams file from disk with `ETag` and `Accept-Ranges: bytes`.                      |
-| `string`                        | `200`                 | `text/plain; charset=utf-8`        | Sends plain text (unless `Content-Type` was explicitly set via `wire.headers.set`). |
-| `null` or `undefined`           | `204`                 | _(none)_                           | Sends an empty body (`204 No Content`, or explicit `wire.status(code)`).            |
-| `async *generator()`            | `200`                 | `text/event-stream; charset=utf-8` | Streams yielded values as Server-Sent Events (`data: <json>\n\n`).                  |
-| `ReadableStream` / `Uint8Array` | `200`                 | _(user-defined or default)_        | Streams raw binary bytes directly to the response.                                  |
-| Web `Response`                  | `Response.status`     | `Response.headers`                 | Returned verbatim as-is.                                                            |
+### 8.2 HTML Responses & XSS Protection (`wire.html`)
 
-### 6.2 XSS-Safe HTML Templates & Raw HTML (`wire.html`)
-
-Returning a plain `string` always defaults to `text/plain` to prevent accidental Cross-Site Scripting (XSS). To send HTML responses, use **`wire.html`**:
-
-1. **Tagged Template Literal (Recommended):** Automatically HTML-escapes all interpolated variables (`&`, `<`, `>`, `"`, `'`), while preserving nested `wire.html` fragments and arrays of fragments unescaped.
-2. **Direct Function Call:** `wire.html(rawHtmlString)` sends an already-trusted HTML string with `Content-Type: text/html; charset=utf-8`.
+**1. Raw HTML string:**
 
 ```javascript
-import { serve, wire } from "servin";
-
-await serve({
-  port: 3000,
-  api: {
-    // 1. Tagged template with automatic XSS escaping and nested components
-    greet: {
-      $name: {
-        get(name) {
-          const badges = ["Admin", "Verified"].map(
-            (b) => wire.html`<span class="badge">${b}</span>`,
-          );
-
-          // If `name` is "<script>alert(1)</script>", it is safely escaped to &lt;script&gt;...
-          // Meanwhile `badges` (already HtmlResponse instances) render as real <span> tags.
-          return wire.html`
-            <!doctype html>
-            <html>
-              <body>
-                <h1>Welcome, ${name}!</h1>
-                <div class="badges">${badges}</div>
-              </body>
-            </html>
-          `;
-        },
-      },
-    },
-
-    // 2. Direct string call
-    banner: {
-      get: () => wire.html('<div class="banner">System Operational</div>'),
-    },
-
-    // 3. Manual Content-Type header override on a plain string
-    custom: {
-      get() {
-        wire.headers.set("content-type", "text/html; charset=utf-8");
-        return "<p>Sent with explicit header</p>";
-      },
-    },
-  },
-});
+const page = {
+  get: () => wire.html("<h1>Hello World</h1>"),
+};
 ```
 
-### 6.3 Streaming Files with ETag & Byte-Range (`wire.file`)
-
-`wire.file(filePath)` streams files directly from the filesystem without loading them into memory. It automatically:
-
-- Resolves MIME types (`.html`, `.css`, `.js`, `.json`, `.svg`, `.png`, `.jpg`, `.webp`, `.pdf`, `.mp4`, `.mp3`, `.zip`, etc.).
-- Computes weak `ETag` headers (`W/"<size>-<mtimeMs>"`) and responds with `304 Not Modified` when `If-None-Match` matches.
-- Supports HTTP `Range: bytes=start-end` headers (`206 Partial Content` and `416 Range Not Satisfiable`) for audio/video scrubbing and resumable downloads.
+**2. Tagged template literal (auto-escapes untrusted variables against XSS):**
 
 ```javascript
-import path from "node:path";
-import { serve, wire } from "servin";
-
-const PAGES_DIR = path.resolve("./pages");
-
-await serve({
-  port: 3000,
-  api: {
-    // GET /home -> ./pages/home.html
-    home: {
-      get: () => wire.file("./pages/home.html"),
-    },
-
-    // GET /docs/guide -> ./pages/guide.html (with path-traversal protection)
-    docs: {
-      $slug: {
-        get(slug) {
-          const resolved = path.resolve(PAGES_DIR, `${slug}.html`);
-          if (!resolved.startsWith(PAGES_DIR + path.sep)) {
-            wire.abort(403, "Access denied");
-          }
-          return wire.file(resolved);
-        },
-      },
+const profile = {
+  $name: {
+    get(name) {
+      // If `name` is "<script>alert(1)</script>", it is safely escaped to &lt;script&gt;...
+      return wire.html`<h1>Profile: ${name}</h1>`;
     },
   },
-});
+};
 ```
 
-### 6.4 Server-Sent Events (SSE) with Async Generators
-
-Define an `async *get()` method (or a leaf `async *name()`) to stream real-time events over HTTP. If the client closes the connection early, `servin` automatically invokes `iterator.return()` and runs any registered `wire.undo()` cleanup handlers:
+**3. Composing nested `wire.html` fragments safely:**
 
 ```javascript
-import { serve, wire } from "servin";
-
-await serve({
-  port: 3000,
-  api: {
-    notifications: {
-      async *stream(query) {
-        let count = 0;
-        const interval = setInterval(() => {}, 1000);
-        wire.undo(() => clearInterval(interval));
-
-        while (!wire.signal.aborted && count < 5) {
-          count++;
-          yield {
-            id: count,
-            channel: query.channel || "general",
-            ts: Date.now(),
-          };
-          await new Promise((r) => setTimeout(r, 1000));
-        }
-      },
-    },
+const dashboard = {
+  get() {
+    const items = ["Apples", "Bananas"].map(
+      (item) => wire.html`<li>${item}</li>`,
+    );
+    // Nested `wire.html` values and arrays are NOT double-escaped
+    return wire.html`<ul>${items}</ul>`;
   },
-});
+};
 ```
 
-### 6.5 Sparse Fieldsets (`?fields=`) & Automatic Redaction (`redact`)
+### 8.3 File Streaming with `ETag` & Byte-Range (`wire.file`)
 
-- **Global Field Redaction (`redact`):** Any matching key names or dot-paths configured in `serve({ redact: [...] })` are stripped recursively from all JSON responses before serialization and caching.
-- **Client-Driven Sparse Fieldsets (`?fields=`):** Every `GET` endpoint returning a JSON object or array automatically supports `?fields=id,title,author.name` to trim unused properties before serialization.
+```javascript
+const landing = {
+  get: () => wire.file("./public/index.html"),
+};
+```
+
+### 8.4 Server-Sent Events (SSE) with Async Generators
+
+Use `async *get()` to stream live updates. If the client disconnects early, `servin` automatically stops the generator and runs any `wire.undo()` cleanup:
+
+```javascript
+const clock = {
+  async *get() {
+    for (let i = 0; i < 5; i++) {
+      yield { tick: i, time: new Date().toISOString() };
+      await new Promise((r) => setTimeout(r, 1000));
+    }
+  },
+};
+```
+
+### 8.5 Sparse Fieldsets (`?fields=`) & Automatic Redaction (`redact`)
+
+- **`redact`:** Strips sensitive keys globally from all JSON responses.
+- **`?fields=`:** Allows clients on any `GET` endpoint to request only the fields they need.
 
 ```javascript
 await serve({
   port: 3000,
-  redact: ["password*", "*.secret", "internalNotes"],
+  redact: ["password*", "*.secret"],
   api: {
     users: {
       get: () => [
         {
           id: 1,
           name: "Nadia",
-          passwordHash: "$2b$10$...", // Automatically stripped by `redact`
-          profile: { email: "nadia@example.com", secret: "xyz" }, // `secret` stripped
+          email: "nadia@example.com",
+          passwordHash: "xyz",
         },
       ],
     },
   },
 });
-// GET /users?fields=id,profile.email -> [{ "id": 1, "profile": { "email": "nadia@example.com" } }]
+// GET /users?fields=id,name -> [{ "id": 1, "name": "Nadia" }]
 ```
 
 ---
 
-## 7. Security, Sessions & Traffic Control
+## 9. Security, Sessions & Traffic Control
 
-### 7.1 Branch & Leaf Protection (`guard`)
+### 9.1 Protecting Routes & Branches (`guard`)
 
-`guard(policyFn, branch)` attaches an authorization or precondition policy to an entire domain subtree or a single leaf route. Guards execute **before** request body parsing, **before** rate-limit accounting, and **before** WebSocket `101 Switching Protocols` handshakes. Multiple `guard()` wrappers compose cleanly from outer to inner branches.
+**Step 1 — Guard a single endpoint:**
 
 ```javascript
-import { serve, wire, guard, param } from "servin";
+import { wire, guard } from "servin";
 
 function requireAuth() {
-  if (!wire.session.userId) {
-    wire.abort(401, "Authentication required");
-  }
+  if (!wire.session.userId) wire.abort(401, "Please sign in");
 }
 
+const secretNote = guard(requireAuth, {
+  get: () => ({ secret: "Top secret data" }),
+});
+```
+
+**Step 2 — Guard an entire branch and stack multiple guards:**
+
+```javascript
 function requireAdmin() {
-  if (wire.session.role !== "admin") {
-    wire.abort(403, "Administrator privileges required");
-  }
+  if (wire.session.role !== "admin") wire.abort(403, "Admins only");
 }
 
-await serve({
-  port: 3000,
-  session: {
-    secret: process.env.SESSION_SECRET || "dev-secret-change-in-production",
+// `requireAuth` runs first on everything inside `dashboard`,
+// and `requireAdmin` also runs on everything inside `admin`.
+const dashboard = guard(requireAuth, {
+  overview: {
+    get: () => ({ userId: wire.session.userId }),
   },
-  api: {
-    // Public route: `wire.session` is never touched, incurring zero cookie/store overhead
-    status: {
-      get: () => ({ status: "healthy" }),
+  admin: guard(requireAdmin, {
+    settings: {
+      get: () => ({ maintenanceMode: false }),
     },
-
-    // Protected branch: requires authenticated user, and nested `admin` requires admin role
-    account: guard(requireAuth, {
-      profile: {
-        get: () => ({ userId: wire.session.userId, role: wire.session.role }),
-      },
-      admin: guard(requireAdmin, {
-        users: {
-          $id: param("int", {
-            delete: (id) => ({ deletedUserId: id }),
-          }),
-        },
-      }),
-    }),
-  },
+  }),
 });
 ```
 
-### 7.2 Lazy Reactive Sessions (`wire.session`) & Multi-Device Control (`wire.sessions`)
+### 9.2 Lazy Encrypted Sessions (`wire.session` & `wire.sessions`)
 
-When `session: { secret }` is configured in `serve()`, `wire.session` provides an AES-256-GCM encrypted, HttpOnly cookie-backed session managed through a **Lazy Proxy**:
+Sessions use AES-256-GCM encrypted `HttpOnly` cookies and are **completely lazy**: if a route never reads or writes `wire.session`, cookies are never decrypted and the session store is never touched.
 
-- **Zero Overhead on Public Routes:** If a handler never reads or writes `wire.session`, cookies are never decrypted and the session store is never queried.
-- **Plain Object Semantics:** Assign or delete properties directly (`wire.session.userId = 42`, `delete wire.session.tempFlag`). Changes are persisted and `Set-Cookie` is emitted automatically before headers are sent.
-- **Session Fixation Protection:** Call `await wire.session.rotate()` on login to issue a fresh session ID and invalidate the previous one.
-- **Multi-Device Tracking & Cross-Protocol Auto-Kick:** Call `wire.session.bind(userId)` to associate the session with a user account. Setting `wire.session = null` on logout deletes the store record, clears the cookie, and **immediately closes all active WebSockets** bound to that session (`4001 Session revoked`).
+**Step 1 — Enable sessions in `serve()` and read/write properties:**
 
 ```javascript
-import { serve, wire, guard } from "servin";
-
 await serve({
   port: 3000,
-  session: {
-    secret: "super-secret-key-at-least-32-chars",
-    cookieName: "app_sid",
-    ttl: "7d",
-    rolling: true,
-    secure: process.env.NODE_ENV === "production",
-    sameSite: "Lax",
-  },
+  session: { secret: "replace-with-32-char-secret-key!!" },
   api: {
-    auth: {
-      login: {
-        async post({ email, password }) {
-          const user = { id: 42, name: "Nadia", role: "admin" };
-
-          await wire.session.rotate();
-          wire.session.bind(user.id);
-          wire.session.userId = user.id;
-          wire.session.role = user.role;
-          wire.session.device = wire.headers.get("user-agent") || "Unknown";
-
-          return { id: user.id, name: user.name };
-        },
+    counter: {
+      get() {
+        wire.session.views = (wire.session.views || 0) + 1;
+        return { views: wire.session.views };
       },
-
-      logout: {
-        post() {
-          // Destroys store record, clears cookie, and kicks active WebSockets for this session
-          wire.session = null;
-          return { signedOut: true };
-        },
-      },
-
-      devices: guard(
-        () => {
-          if (!wire.session.userId) wire.abort(401);
-        },
-        {
-          // List all active sessions bound to the current user
-          get: () => wire.sessions.list(wire.session.userId),
-
-          // Revoke all other devices and close their active WebSockets
-          revokeOthers: {
-            async post() {
-              const revokedCount = await wire.sessions.revokeOthers(
-                wire.session.userId,
-              );
-              return { revokedCount };
-            },
-          },
-        },
-      ),
     },
   },
 });
 ```
 
-### 7.3 Custom Session Store Interface (Redis / Database)
-
-By default, `servin` uses an in-memory store (`MemorySessionStore`). For multi-instance deployments, pass any custom store implementing `get`, `set`, `delete`, `listByUser`, and `revokeOthers`:
+**Step 2 — Rotate session ID on login & destroy on logout:**
 
 ```javascript
-const redisSessionStore = {
+const auth = {
+  login: {
+    async post({ userId, role }) {
+      await wire.session.rotate(); // Prevents session fixation
+      wire.session.userId = userId;
+      wire.session.role = role;
+      return { loggedIn: true };
+    },
+  },
+  logout: {
+    post() {
+      wire.session = null; // Deletes store record, clears cookie, closes active WS
+      return { loggedOut: true };
+    },
+  },
+};
+```
+
+**Step 3 — Multi-device session listing & remote revocation:**
+
+```javascript
+const devices = {
+  // Bind session to a userId during login: `wire.session.bind(userId)`
+  get: () => wire.sessions.list(wire.session.userId),
+
+  revokeOthers: {
+    async post() {
+      const count = await wire.sessions.revokeOthers(wire.session.userId);
+      return { revokedDevices: count };
+    },
+  },
+};
+```
+
+### 9.3 Custom Session Store Interface (Redis / Database)
+
+Pass a custom `store` object to `session` for multi-server deployments:
+
+```javascript
+const customStore = {
   async get(sid) {
-    const raw = await redis.get(`sess:${sid}`);
-    return raw ? JSON.parse(raw) : null; // { userId, data, createdAt, updatedAt, expiresAt }
+    /* return { userId, data, createdAt, updatedAt, expiresAt } | null */
   },
   async set(sid, record) {
-    const ttlSec = Math.max(
-      1,
-      Math.ceil((record.expiresAt - Date.now()) / 1000),
-    );
-    await redis.set(`sess:${sid}`, JSON.stringify(record), "EX", ttlSec);
-    if (record.userId != null) {
-      await redis.sadd(`user_sess:${record.userId}`, sid);
-    }
+    /* persist record */
   },
   async delete(sid) {
-    const existing = await this.get(sid);
-    if (existing?.userId != null) {
-      await redis.srem(`user_sess:${existing.userId}`, sid);
-    }
-    await redis.del(`sess:${sid}`);
+    /* delete sid */
   },
   async listByUser(userId) {
-    const sids = await redis.smembers(`user_sess:${userId}`);
-    const out = [];
-    for (const sid of sids) {
-      const rec = await this.get(sid);
-      if (rec) {
-        out.push({
-          id: sid.slice(0, 8),
-          createdAt: rec.createdAt,
-          updatedAt: rec.updatedAt,
-          device: rec.data?.device,
-        });
-      }
-    }
-    return out;
+    /* return array of active session summaries */
   },
   async revokeOthers(userId, currentSid) {
-    const sids = await redis.smembers(`user_sess:${userId}`);
-    const revoked = [];
-    for (const sid of sids) {
-      if (sid !== currentSid) {
-        await this.delete(sid);
-        revoked.push(sid);
-      }
-    }
-    return revoked;
+    /* delete all user sessions except currentSid; return revoked sids */
   },
 };
 
 await serve({
   port: 3000,
-  session: { secret: process.env.SESSION_SECRET, store: redisSessionStore },
-  api: {
-    /* ... */
-  },
+  session: { secret: process.env.SESSION_SECRET, store: customStore },
+  api: {},
 });
 ```
 
-### 7.4 Timing-Safe Webhook Verification (`webhook`)
+### 9.4 Timing-Safe Webhook Verification (`webhook`)
 
-Add `webhook: { secret, header, algo }` to any endpoint to verify HMAC signatures over the raw request body using `crypto.timingSafeEqual` before JSON parsing occurs. Supports raw hex digests as well as prefixed signatures (`sha256=...`):
+Verify HMAC signatures automatically over the raw body before JSON parsing:
 
 ```javascript
-export const webhooks = {
-  stripe: {
-    webhook: {
-      secret: process.env.STRIPE_WEBHOOK_SECRET,
-      header: "stripe-signature",
-      algo: "sha256",
-    },
-    async post(event) {
-      // Only reached if HMAC signature is valid
-      return { received: true, type: event.type };
-    },
+const stripeWebhook = {
+  webhook: {
+    secret: process.env.STRIPE_WEBHOOK_SECRET,
+    header: "stripe-signature",
+    algo: "sha256",
+  },
+  post(event) {
+    return { received: true, type: event.type };
   },
 };
 ```
 
-### 7.5 Context-Aware Smart Rate Limiting (`limit` & `wire.cost`)
+### 9.5 Rate Limiting (`limit` & `wire.cost`)
 
-Configure `limit: { max, window, key }` on any node to enforce sliding point-bucket rate limits. By default, each request deducts `1` point. Inside your handler, call `wire.cost(points)` to dynamically adjust the cost—for example, charging `5` points on a failed password attempt and `0` points on a valid login:
+**Step 1 — Basic rate limit per window:**
 
 ```javascript
-import { wire } from "servin";
+const search = {
+  limit: { max: 30, window: "1m" },
+  get: (query) => ({ results: [], q: query.q }),
+};
+```
 
-export const login = {
+**Step 2 — Dynamic point costs with `wire.cost()`:**
+
+Each request costs `1` point by default. Call `wire.cost(points)` to penalize failed attempts or refund valid ones:
+
+```javascript
+const login = {
   limit: {
-    max: 15,
+    max: 10,
     window: "10m",
-    key: (payload) => `login:${payload?.email || "anon"}`,
+    key: (payload) => `login:${payload?.email || "unknown"}`,
   },
   async post(payload) {
-    const user = await verifyUser(payload.email, payload.password);
-    if (!user) {
-      wire.cost(5); // Penalize failed login attempts heavily
-      wire.abort(401, "Invalid email or password");
+    const valid = payload.password === "secret123";
+    if (!valid) {
+      wire.cost(5); // Failed attempts consume 5x quota
+      wire.abort(401, "Invalid credentials");
     }
-    wire.cost(0); // Successful logins consume 0 quota
-    return { id: user.id };
+    wire.cost(0); // Successful login costs 0 points
+    return { ok: true };
   },
 };
 ```
 
-### 7.6 CORS & Preflight Handling (`origins`)
-
-Pass `origins` to `serve()` to enable Cross-Origin Resource Sharing with credentials and automatic `OPTIONS` preflight responses:
+### 9.6 CORS & Preflight Handling (`origins`)
 
 ```javascript
 await serve({
   port: 3000,
   origins: ["https://app.example.com", "http://localhost:5173"],
-  api: {
-    /* ... */
-  },
+  api: {},
 });
 ```
 
 ---
 
-## 8. Data Integrity, Caching & Resilience
+## 10. Caching, Validation & Resilience
 
-### 8.1 Self-Invalidating Response Cache (`cache`)
+### 10.1 Self-Invalidating Response Cache (`cache`)
 
-Setting `cache: '<duration>'` (e.g., `'30s'`, `'5m'`, `'1h'`) on a domain node caches `GET` responses keyed by route parameters and query string. Whenever a mutating method (`POST`, `PUT`, `PATCH`, `DELETE`) succeeds on that node—or on any child branch beneath it—`servin` automatically invalidates both the node's cache entries and any ancestor caches:
+**Step 1 — Cache a `GET` endpoint:**
 
 ```javascript
-export const posts = {
-  cache: "10m", // Caches GET /posts
-  get: () => db.posts.findAll(),
-  post: (data) => db.posts.create(data), // Automatically purges GET /posts cache
+const stats = {
+  cache: "1m", // Cached for 1 minute
+  get: () => ({ generatedAt: Date.now() }),
+};
+```
+
+**Step 2 — Automatic invalidation on mutations:**
+
+When `cache` is placed on a parent or item node, any successful `POST`, `PUT`, `PATCH`, or `DELETE` automatically clears both the item cache and parent list cache:
+
+```javascript
+const articles = {
+  cache: "5m",
+  get: () => db.articles.all(),
+  post: (data) => db.articles.create(data), // Automatically clears GET /articles cache
 
   $id: param("int", {
-    cache: "10m", // Caches GET /posts/:id
-    get: (id) => db.posts.findById(id),
-    patch: (id, data) => db.posts.update(id, data), // Purges BOTH GET /posts/:id AND GET /posts
-    delete: (id) => db.posts.delete(id), // Purges BOTH GET /posts/:id AND GET /posts
+    cache: "5m",
+    get: (id) => db.articles.find(id),
+    patch: (id, data) => db.articles.update(id, data), // Clears GET /articles/:id AND GET /articles
   }),
 };
 ```
 
-### 8.2 Request Coalescing (`coalesce`)
+### 10.2 Request Coalescing (`coalesce`)
 
-Set `coalesce: true` on expensive `GET` endpoints to deduplicate concurrent identical requests. If 500 clients hit the same URL at the exact same millisecond on a cold cache, the handler executes **once** and all 500 callers receive the resolved result together:
+Deduplicate simultaneous identical `GET` requests during traffic spikes so your database runs the query only once:
 
 ```javascript
-export const analytics = {
-  dashboard: {
-    coalesce: true,
-    cache: "1m",
-    async get() {
-      return await db.runHeavyAggregationQuery();
-    },
+const report = {
+  coalesce: true,
+  cache: "30s",
+  async get() {
+    return await db.runExpensiveQuery();
   },
 };
 ```
 
-### 8.3 Idempotent Mutations (`idempotent`)
+### 10.3 Idempotent Mutations (`idempotent`)
 
-Set `idempotent: '<duration>'` on mutating endpoints to deduplicate retries carrying the same `Idempotency-Key` HTTP header:
+Prevent duplicate writes when clients retry requests with the same `Idempotency-Key` header:
 
 ```javascript
-export const transfers = {
+const payments = {
   idempotent: "24h",
   async post(payload) {
-    // Retries with the same Idempotency-Key return the original response without re-running
-    return await ledger.transfer(payload);
+    return await chargeCustomer(payload);
   },
 };
 ```
 
-### 8.4 Declarative Shape-by-Example Validation (`expect`)
+### 10.4 Declarative Input Validation (`expect`)
 
-Define `expect` on any node with `POST`, `PUT`, or `PATCH` handlers to validate request payloads before execution. Invalid payloads automatically return `422 Unprocessable Entity` with structured field-level error details:
-
-Supported field rules:
-
-- Primitive types: `'string'`, `'number'`, `'boolean'`, `'array'`
-- Built-in format: `'email'`
-- Optional fields: append `?` (e.g., `'string?'`, `'number?'`, `'email?'`)
-- Enum values: pass an array of allowed literals (e.g., `['free', 'pro', 'enterprise']`)
-- Nested objects: nest another schema object
+**Step 1 — Validate basic required fields (returns `422` if invalid):**
 
 ```javascript
-export const users = {
-  register: {
-    expect: {
-      email: "email",
-      age: "number",
-      plan: ["free", "pro"],
-      bio: "string?",
-      tags: "array?",
-      preferences: {
-        newsletter: "boolean",
-      },
+const signup = {
+  expect: {
+    email: "email",
+    password: "string",
+    age: "number",
+  },
+  post(payload) {
+    return { created: payload.email };
+  },
+};
+```
+
+**Step 2 — Optional fields (`?`), enums, arrays, and nested objects:**
+
+```javascript
+const createProject = {
+  expect: {
+    name: "string",
+    visibility: ["private", "team", "public"], // Enum
+    description: "string?", // Optional string
+    tags: "array?", // Optional array
+    settings: {
+      // Nested object
+      notifications: "boolean",
     },
-    post(payload) {
-      return { created: true, user: payload };
-    },
+  },
+  post: (payload) => payload,
+};
+```
+
+### 10.5 Automatic Rollbacks (`wire.undo`) & Dry-Runs (`X-Simulate`)
+
+**Step 1 — Register undo actions after each side effect:**
+
+If a later step throws an error or calls `wire.abort()`, `servin` runs all `wire.undo()` functions in reverse order (LIFO):
+
+```javascript
+const transfer = {
+  async post({ from, to, amount }) {
+    await db.debit(from, amount);
+    wire.undo(() => db.credit(from, amount)); // Runs automatically if credit() below fails
+
+    await db.credit(to, amount);
+    return { transferred: amount };
   },
 };
 ```
 
-### 8.5 Automatic Rollbacks (`wire.undo`) & Speculative Dry-Runs (`X-Simulate`)
+**Step 2 — Speculative dry-runs via `X-Simulate: true`:**
 
-Register compensating actions via `wire.undo(fn)` right after each side-effecting step. If any subsequent step throws an error or calls `wire.abort()`, `servin` executes all registered undo callbacks in reverse order (**LIFO**).
+When a client sends header `X-Simulate: true`, `servin` executes your handler to compute the exact response, then automatically runs `wire.undo()` so no state changes persist.
 
-Additionally, sending **`X-Simulate: true`** in the request headers executes your real handler logic to compute the exact response and status code, then automatically triggers the `wire.undo()` stack before returning—enabling zero-duplication dry-runs and transaction previews:
+### 10.6 Graceful Background Tasks (`wire.defer`)
+
+Run non-blocking work after sending the HTTP response. `servin` waits for all deferred tasks to finish during server shutdown:
 
 ```javascript
-import { wire } from "servin";
-
-export const checkout = {
-  async post(order) {
-    const hold = await inventory.reserve(order.items);
-    wire.undo(() => inventory.release(hold.id));
-
-    const payment = await billing.charge(order.userId, order.total);
-    wire.undo(() => billing.refund(payment.id));
-
-    // If dispatch fails—or if the client sent `X-Simulate: true`—both
-    // `billing.refund` and `inventory.release` run automatically in reverse order.
-    const shipment = await shipping.dispatch(hold.id, order.address);
-
+const register = {
+  async post(user) {
+    const saved = await db.users.insert(user);
+    wire.defer(() => sendWelcomeEmail(saved.email));
     wire.status(201);
-    return { trackingId: shipment.id, totalCharged: order.total };
+    return saved;
   },
 };
 ```
 
-### 8.6 Graceful Background Tasks (`wire.defer`)
-
-Use `wire.defer(fn)` to schedule non-blocking tasks (such as sending emails, webhooks, or audit logs) after the HTTP response is sent. `servin` tracks all active deferred promises and awaits their completion during `SIGTERM` / `SIGINT` / `app.close()` shutdowns:
+### 10.7 Load Shedding (`priority: 'low'`) & Deprecation (`sunset`)
 
 ```javascript
-import { wire } from "servin";
-
-export const orders = {
-  async post(payload) {
-    const order = await db.orders.insert(payload);
-
-    wire.defer(async () => {
-      await mailer.sendReceipt(order.email, order.id);
-    });
-
-    wire.status(201);
-    return order;
-  },
-};
-```
-
-### 8.7 Adaptive Load Shedding (`priority: 'low'`) & API Deprecation (`sunset`)
-
-- **Adaptive Load Shedding:** Mark non-critical endpoints (like exports or recommendations) with `priority: 'low'`. When the Node.js event-loop p95 delay exceeds `lagThresholdMs` (default `60ms`), `servin` automatically sheds those requests with `503 Service Unavailable` and `Retry-After: 2` to protect critical traffic.
-- **API Sunset Headers:** Set `sunset: '2027-01-01'` on legacy endpoints to automatically attach standard `Deprecation: true` and `Sunset` HTTP headers.
-
-```javascript
-export const legacy = {
-  sunset: "2027-06-01T00:00:00Z",
-  exportCsv: {
-    priority: "low",
-    get: () => generateLargeCsvReport(),
+const exportsApi = {
+  sunset: "2027-01-01", // Emits standard Deprecation and Sunset headers
+  csv: {
+    priority: "low", // Returns 503 Retry-After: 2 if event loop p95 lag > lagThresholdMs
+    get: () => buildHeavyCsv(),
   },
 };
 ```
 
 ---
 
-## 9. Unified Linear WebSockets
+## 11. Linear WebSockets & Pub/Sub
 
-### 9.1 Linear WebSocket Streams (`ws` & `for await`)
+### 11.1 Step 1: Minimal Echo WebSocket (`ws` & `for await`)
 
-WebSocket endpoints live directly inside your domain tree as a `ws` method. Guards, typed parameters (`param()`), and lazy sessions (`wire.session`) all execute prior to the `101 Switching Protocols` handshake. Inside `ws`, you write the entire connection lifecycle linearly using `for await (const msg of socket)`:
-
-```javascript
-import { serve, wire, guard, param } from "servin";
-
-const requireUser = () => {
-  if (!wire.session.userId) wire.abort(401, "Sign in required");
-};
-
-await serve({
-  port: 3000,
-  session: { secret: "super-secret-key-at-least-32-chars" },
-  api: {
-    rooms: guard(requireUser, {
-      $id: param("slug", {
-        // HTTP GET /rooms/general
-        get: (id) => ({ room: id, active: true }),
-
-        // WS /rooms/general
-        async ws(id, socket) {
-          const topic = `room:${id}`;
-          const joinedAt = Date.now();
-
-          socket.join(topic);
-          socket.send({ type: "welcome", room: id, user: wire.session.userId });
-          socket.broadcast(topic, {
-            type: "user_joined",
-            user: wire.session.userId,
-          });
-
-          // Runs automatically when the client disconnects or session is revoked
-          wire.undo(() => {
-            socket.broadcast(topic, {
-              type: "user_left",
-              user: wire.session.userId,
-              connectedMs: Date.now() - joinedAt,
-            });
-          });
-
-          for await (const message of socket) {
-            wire.publish(topic, {
-              type: "chat",
-              from: wire.session.userId,
-              text: message.text,
-            });
-          }
-        },
-      }),
-    }),
-  },
-});
-```
-
-### 9.2 Pub/Sub Topics & Cross-Protocol Messaging (`wire.publish`)
-
-Any HTTP handler can broadcast real-time messages to subscribed WebSocket clients using `wire.publish(topic, data)`:
+Add a `ws(socket)` method anywhere in your tree and iterate over incoming messages linearly with `for await`:
 
 ```javascript
-export const orders = {
-  $id: param("int", {
-    approve: {
-      async post(id) {
-        const updated = await db.orders.markApproved(id);
-        // Pushes live update to all WebSocket clients subscribed to `order:42`
-        wire.publish(`order:${id}`, { event: "approved", order: updated });
-        return updated;
-      },
-    },
-  }),
-};
-```
-
-**Linear Socket Methods & Properties:**
-
-- `for await (const msg of socket)` — Yields parsed JSON objects (or `Uint8Array` for binary frames).
-- `socket.send(data)` — Sends JSON-serialized data or raw `Uint8Array` binary frames to this client.
-- `socket.join(topic)` / `socket.leave(topic)` — Subscribes or unsubscribes the socket from a topic (automatically cleaned up on disconnect).
-- `socket.broadcast(topic, data)` — Sends `data` to all subscribers of `topic` _except_ the sender.
-- `socket.close(code, reason)` — Closes the WebSocket connection cleanly.
-- `socket.isOpen` — Boolean indicating whether the underlying TCP socket is open.
-- `socket.bufferedAmount` — Bytes currently queued in the socket write buffer.
-
-### 9.3 WebSocket Options (`wsConfig`) & Session Auto-Kick
-
-Customize frame limits, ping/pong heartbeats, and binary mode per branch using `wsConfig`:
-
-```javascript
-export const telemetry = {
-  wsConfig: {
-    maxPayload: "256kb",
-    heartbeat: "30s", // Automatically sends WebSocket Ping frames and closes unresponsive clients
-    binary: true, // Delivers incoming frames as Uint8Array
-  },
+const echo = {
+  // WS /echo
   async ws(socket) {
-    for await (const chunk of socket) {
-      socket.send(chunk); // Echo binary Uint8Array
+    socket.send({ status: "connected" });
+
+    for await (const msg of socket) {
+      socket.send({ echoed: msg });
     }
   },
 };
 ```
 
+### 11.2 Step 2: Rooms & Pub/Sub Broadcasting (`socket.join`, `wire.publish`)
+
+Subscribe sockets to named topics and broadcast messages from either WebSocket handlers or HTTP routes:
+
+```javascript
+const chat = {
+  $room: {
+    // WS /chat/:room
+    async ws(room, socket) {
+      socket.join(`room:${room}`);
+      socket.broadcast(`room:${room}`, { event: "joined" });
+
+      for await (const msg of socket) {
+        wire.publish(`room:${room}`, { text: msg.text });
+      }
+    },
+  },
+
+  // Any HTTP route can also publish to WebSocket subscribers!
+  announce: {
+    post({ room, text }) {
+      wire.publish(`room:${room}`, { announcement: text });
+      return { sent: true };
+    },
+  },
+};
+```
+
+### 11.3 Step 3: Guarded WebSockets & `wsConfig`
+
+Combine `guard()`, `param()`, and `wsConfig` (`heartbeat`, `maxPayload`, `binary`) on the same branch:
+
+```javascript
+const liveStream = guard(requireAuth, {
+  wsConfig: {
+    maxPayload: "256kb",
+    heartbeat: "30s",
+  },
+  $channelId: param("int", {
+    async ws(channelId, socket) {
+      socket.join(`ch:${channelId}`);
+      for await (const msg of socket) {
+        socket.broadcast(`ch:${channelId}`, msg);
+      }
+    },
+  }),
+});
+```
+
 ---
 
-## 10. Streaming Uploads (`wire.multipart` & `rawBody`)
+## 12. Streaming File Uploads (`wire.multipart` & `rawBody`)
 
-### Streaming `multipart/form-data` (`wire.multipart`)
-
-`wire.multipart(opts)` parses incoming multipart streams sequentially without buffering entire file uploads into RAM:
+**1. Streaming `multipart/form-data` without buffering in RAM:**
 
 ```javascript
 import fs from "node:fs";
@@ -1430,54 +1470,42 @@ import { pipeline } from "node:stream/promises";
 import { Readable } from "node:stream";
 import { wire } from "servin";
 
-export const uploads = {
+const upload = {
   async post() {
-    const metadata = {};
-    const uploadedFiles = [];
+    const fields = {};
+    const files = [];
 
-    for await (const part of wire.multipart({ maxFileSize: "50mb" })) {
+    for await (const part of wire.multipart({ maxFileSize: "20mb" })) {
       if (part.isField) {
-        metadata[part.name] = await part.text();
+        fields[part.name] = await part.text();
       } else if (part.isFile) {
-        const dest = `./uploads/${Date.now()}-${part.filename}`;
+        const dest = `./uploads/${part.filename}`;
         await pipeline(
           Readable.fromWeb(part.stream),
           fs.createWriteStream(dest),
         );
-        uploadedFiles.push({
-          field: part.name,
-          filename: part.filename,
-          savedTo: dest,
-        });
+        files.push(part.filename);
       }
     }
 
-    wire.status(201);
-    return { metadata, uploadedFiles };
+    return { fields, files };
   },
 };
 ```
 
-### Raw Unbuffered Binary Uploads (`rawBody: true`)
-
-Set `rawBody: true` on a route to skip body parsing and pipe `wire.stream` directly:
+**2. Raw unbuffered binary upload (`rawBody: true`):**
 
 ```javascript
-import fs from "node:fs";
-import { pipeline } from "node:stream/promises";
-import { Readable } from "node:stream";
-import { wire } from "servin";
-
-export const blobs = {
-  $name: {
+const rawUpload = {
+  $filename: {
     rawBody: true,
-    async put(name) {
+    async put(filename) {
       await pipeline(
         Readable.fromWeb(wire.stream),
-        fs.createWriteStream(`./storage/${name}`),
+        fs.createWriteStream(`./uploads/${filename}`),
       );
       wire.status(201);
-      return { stored: name };
+      return { saved: filename };
     },
   },
 };
@@ -1485,171 +1513,113 @@ export const blobs = {
 
 ---
 
-## 11. Decoupled Side Effects (`reactTo`)
+## 13. Decoupled Side Effects (`reactTo`)
 
-Use `reactTo(targetHandlerFn, observerFn)` to attach cross-cutting side effects (loyalty points, analytics, audit logs) from separate modules without cluttering core domain handlers. `reactTo` returns an unsubscribe function and never runs when `X-Simulate: true` is active:
+Attach secondary side effects (analytics, loyalty points, audit logs) from outside your main handler without coupling modules together:
 
 ```javascript
 import { reactTo } from "servin";
-import { orders } from "./modules/orders.js";
 
-const unsubscribe = reactTo(orders.post, async ({ input, output, wire }) => {
-  if (output.total >= 100) {
-    await db.loyalty.addPoints(output.userId, 50);
-  }
+reactTo(tasks.post, ({ output }) => {
+  console.log(`Audit: task #${output.id} created`);
 });
 ```
 
 ---
 
-## 12. Zero-Build Virtual ESM Client (`/@client.js`)
+## 14. Logging, Debugging & Automated Testing
 
-`servin` automatically serves a dynamic ES module at **`GET /@client.js`** mirroring your exact domain tree. Frontend apps can import `api` directly in the browser without `fetch()` boilerplate, URL string interpolation, or build steps:
+### 14.1 Startup Messages & Access Logs (`message`, `onListen`, `accessLog`)
 
-```javascript
-// In your frontend application (Browser / React / Vue / Svelte / Vanilla JS)
-import { api } from "http://localhost:3000/@client.js";
-
-// 1. GET /tasks?done=false
-const pendingTasks = await api.tasks.get({ done: "false" });
-
-// 2. GET /tasks/1 (typed parameter)
-const task = await api.tasks.$id.get(1);
-
-// 3. POST /tasks
-const created = await api.tasks.post({ title: "Ship v1.0", priority: "high" });
-
-// 4. Method union PUT|PATCH /tasks/1
-const updated = await api.tasks.$id["put|patch"](1, { done: true });
-
-// 5. DELETE /tasks/1 -> returns null on 204
-await api.tasks.$id.delete(1);
-
-// 6. Server-Sent Events (async generator endpoint)
-for await (const event of api.notifications.stream({ channel: "alerts" })) {
-  console.log("SSE event:", event);
-}
-
-// 7. WebSocket connection (ws endpoint)
-const room = api.rooms.$id.ws("general");
-room.send({ text: "Hello from the browser!" });
-
-for await (const msg of room) {
-  console.log("WS message:", msg);
-}
-```
-
----
-
-## 13. Observability, Logging & Automated Testing
-
-### 13.1 Custom Startup Messages & Access Logs (`message`, `onListen`, `accessLog`)
-
-`servin` logs incoming HTTP and WebSocket traffic automatically (`[servin] GET /tasks 200 1.2ms [CACHE]`) and prints a startup message when ready. Both can be customized or disabled:
+**1. Custom startup message:**
 
 ```javascript
-import { serve } from "servin";
-
 await serve({
   port: 3000,
-
-  // Custom startup message (string, function, or false)
-  message: ({ port, url }) => `Server is running on port ${port} -> ${url}`,
-
-  // Optional async hook once listening
-  async onListen({ port }) {
-    console.log(`Health check ready at http://127.0.0.1:${port}/health`);
-  },
-
-  // Custom access log formatter & filter (or pass `accessLog: false` to disable)
-  accessLog(info) {
-    if (info.url.pathname === "/health") return null; // Skip noisy healthchecks
-    const cacheTag = info.cached ? " [CACHE]" : "";
-    return `[${info.status}] ${info.method} ${info.url.pathname} (${info.durationMs.toFixed(1)}ms)${cacheTag}`;
-  },
-
-  api: {
-    health: { get: () => ({ status: "ok" }) },
-  },
+  message: ({ port, url }) => `Server running on port ${port} (${url})`,
+  api: {},
 });
 ```
 
-### 13.2 Error-Triggered Debug Trace (`wire.log.debug`) & `Server-Timing` (`wire.mark`)
-
-- **`wire.log.debug(msg, meta)`:** Buffers diagnostic logs per request in memory and **only prints them to stderr if the request fails with an unhandled error**, keeping production logs clean during normal traffic while providing full execution traces on failures.
-- **`wire.mark(label)`:** Measures sub-operation durations and emits them in the standard HTTP `Server-Timing` response header.
+**2. Custom access log formatter (or `accessLog: false` to disable):**
 
 ```javascript
-import { wire } from "servin";
+await serve({
+  port: 3000,
+  accessLog(info) {
+    if (info.url.pathname === "/health") return null; // Hide healthchecks
+    return `[${info.status}] ${info.method} ${info.url.pathname} (${info.durationMs.toFixed(1)}ms)`;
+  },
+  api: {},
+});
+```
 
-export const reports = {
+### 14.2 Error-Triggered Debug Trace (`wire.log.debug`) & `Server-Timing` (`wire.mark`)
+
+- `wire.log.debug(...)` buffers logs in memory and **only prints them if the request fails with an unhandled error**.
+- `wire.mark(label)` measures step duration and emits an HTTP `Server-Timing` header.
+
+```javascript
+const report = {
   async get() {
-    wire.log.debug("Starting report generation", {
-      userId: wire.session.userId,
-    });
+    wire.log.debug("Querying analytics table");
 
     const endDb = wire.mark("db");
-    const rows = await db.reports.fetch();
+    const rows = await db.query("SELECT * FROM metrics");
     endDb();
 
-    const endFormat = wire.mark("format");
-    const summary = formatSummary(rows);
-    endFormat();
-
-    // Emits header: Server-Timing: db;dur=14.20, format;dur=1.85
-    return summary;
+    return rows; // Emits header: Server-Timing: db;dur=12.40
   },
 };
 ```
 
-### 13.3 Automated Test Synthesis (`synthesizeTests`)
+### 14.3 Automated Test Synthesis (`synthesizeTests`)
 
-During local development, set `synthesizeTests: './tests/generated.test.js'`. As you exercise endpoints manually or via your frontend, `servin` records verified inputs, status codes, and response shapes and writes a standalone `node:test` file automatically.
+Set `synthesizeTests: './tests/api.test.js'` in `serve()` during development to automatically record verified endpoints into a runnable `node:test` file.
 
-### 13.4 Production Error Snapshots & Local Replay (`snapshotOnError` & `replay`)
+### 14.4 Error Snapshots & Local Replay (`snapshotOnError` & `replay`)
 
-Set `snapshotOnError: './snapshots'` to capture full request metadata whenever an unhandled `500` error occurs. You can replay the exact failing request locally against your handler function using `replay()` from `servin/test`:
+Set `snapshotOnError: './snapshots'` to save failing `500` requests, then replay them locally against your handler:
 
 ```javascript
 import { replay } from "servin/test";
-import { users } from "./modules/users.js";
+import { tasks } from "./tasks.js";
 
-// Re-executes the failing handler locally with captured URL, headers, and extracted parameters
 await replay(
-  users.$id.get,
+  tasks.$id.get,
   "./snapshots/err-2026-11-25T12-00-00-000Z-a1b2c3d4.json",
 );
 ```
 
 ---
 
-## 14. Complete Ambient `wire` API Reference
+## 15. Complete Ambient `wire` API Reference
 
-| Property / Method           | Type / Signature                      | Description                                                                                                                              |
-| :-------------------------- | :------------------------------------ | :--------------------------------------------------------------------------------------------------------------------------------------- |
-| `wire.req`                  | `Request`                             | Underlying Web Fetch `Request` object.                                                                                                   |
-| `wire.method`               | `string`                              | Uppercase HTTP method (`'GET'`, `'POST'`, etc.) or `'WS'`.                                                                               |
-| `wire.url`                  | `URL`                                 | Parsed `URL` instance for the active request.                                                                                            |
-| `wire.headers`              | `Headers` (Proxy)                     | `.get()` / `.has()` reads outgoing headers then incoming request headers; `.set()` / `.append()` / `.delete()` mutates response headers. |
-| `wire.stream`               | `ReadableStream \| null`              | Unbuffered request body byte stream.                                                                                                     |
-| `wire.signal`               | `AbortSignal`                         | Triggered when the client disconnects or aborts the request.                                                                             |
-| `wire.status(code)`         | `(number) => void`                    | Sets the HTTP response status code.                                                                                                      |
-| `wire.abort(status, msg)`   | `(number, string) => never`           | Immediately halts execution, runs `wire.undo()`, and sends `{ error: msg }`.                                                             |
-| `wire.undo(fn)`             | `(() => any) => void`                 | Registers a LIFO rollback callback run on errors, aborts, SSE cancel, or `X-Simulate: true`.                                             |
-| `wire.defer(fn)`            | `(() => any) => void`                 | Queues post-response background tasks tracked during graceful shutdown.                                                                  |
-| `wire.html`                 | `tag \| (string) => HtmlResponse`     | Tagged template literal (auto-escaping XSS) or raw HTML response helper.                                                                 |
-| `wire.file(path)`           | `(string) => FileStreamResponse`      | Streams a file with automatic MIME, `ETag` (`304`), and `Range` (`206`).                                                                 |
-| `wire.multipart(opts)`      | `({ maxFileSize }) => AsyncGenerator` | Streams `multipart/form-data` fields and files sequentially without buffering in RAM.                                                    |
-| `wire.session`              | `Proxy`                               | Lazy encrypted session object (`rotate()`, `bind(uid)`, `id`, `= null` to destroy).                                                      |
-| `wire.sessions`             | `{ list, revokeOthers }`              | Multi-device session listing and remote WebSocket revocation per `userId`.                                                               |
-| `wire.publish(topic, data)` | `(string, any) => void`               | Broadcasts data to all WebSocket clients subscribed to `topic`.                                                                          |
-| `wire.cost(points)`         | `(number) => void`                    | Sets the dynamic rate-limit point cost for the current request.                                                                          |
-| `wire.log.debug(msg, meta)` | `(string, any) => void`               | Request-scoped debug log printed only if an unhandled error occurs.                                                                      |
-| `wire.log.info(msg, meta)`  | `(string, any) => void`               | Structured request-tagged console log.                                                                                                   |
-| `wire.mark(label)`          | `(string) => () => void`              | Starts a performance timer and returns a stop function recorded in `Server-Timing`.                                                      |
+| Member                       | Signature / Type                  | Description                                                                                                              |
+| :--------------------------- | :-------------------------------- | :----------------------------------------------------------------------------------------------------------------------- |
+| `wire.req`                   | `Request`                         | Native Web `Request` instance.                                                                                           |
+| `wire.method`                | `string`                          | Uppercase HTTP method (`'GET'`, `'POST'`, etc.) or `'WS'`.                                                               |
+| `wire.url`                   | `URL`                             | Parsed `URL` instance for the current request.                                                                           |
+| `wire.headers`               | `Headers` (Proxy)                 | Reads response then request headers (`.get()`, `.has()`); mutates response headers (`.set()`, `.append()`, `.delete()`). |
+| `wire.stream`                | `ReadableStream \| null`          | Unbuffered request body stream (used with `rawBody: true`).                                                              |
+| `wire.signal`                | `AbortSignal`                     | Aborted if the client disconnects early.                                                                                 |
+| `wire.status(code)`          | `(number) => void`                | Sets the HTTP status code.                                                                                               |
+| `wire.abort(status, msg)`    | `(number, string) => never`       | Halts execution, triggers `wire.undo()`, and sends `{ error: msg }`.                                                     |
+| `wire.redirect(url, status)` | `(string, number?) => never`      | Halts execution, commits session cookies, and sends a redirect (`302` by default).                                       |
+| `wire.undo(fn)`              | `(() => any) => void`             | Registers a LIFO rollback callback run on error, abort, SSE cancel, or `X-Simulate: true`.                               |
+| `wire.defer(fn)`             | `(() => any) => void`             | Schedules a background task tracked during graceful shutdown.                                                            |
+| `wire.html`                  | `tag \| (string) => HtmlResponse` | Creates an HTML response; escapes interpolated variables when used as a tagged template.                                 |
+| `wire.file(filePath)`        | `(string) => FileStreamResponse`  | Streams a file with `ETag` (`304`) and `Range` (`206`) support.                                                          |
+| `wire.multipart(opts)`       | `(opts?) => AsyncGenerator`       | Iterates streaming `multipart/form-data` fields and files sequentially.                                                  |
+| `wire.session`               | `Proxy \| null`                   | Lazy encrypted session object (`.rotate()`, `.bind(userId)`, or `wire.session = null`).                                  |
+| `wire.sessions`              | `{ list, revokeOthers }`          | Multi-device session listing and remote session revocation helpers.                                                      |
+| `wire.publish(topic, data)`  | `(string, any) => void`           | Broadcasts a message to all WebSocket clients subscribed to `topic`.                                                     |
+| `wire.cost(points)`          | `(number) => void`                | Adjusts rate-limit quota consumption for the current request.                                                            |
+| `wire.log.debug(msg, meta)`  | `(string, any?) => void`          | Buffers a debug log entry emitted only on unhandled errors.                                                              |
+| `wire.mark(label)`           | `(string) => () => number`        | Starts a performance timer; calling the returned function records `Server-Timing`.                                       |
 
 ---
 
-## 15. License
+## 16. License
 
 MIT

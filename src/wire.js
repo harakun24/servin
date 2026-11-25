@@ -36,6 +36,13 @@ export class ServinAbortError extends Error {
   }
 }
 
+export class ServinRedirect {
+  constructor(location, status = 302) {
+    this.location = String(location);
+    this.status = Number(status) || 302;
+  }
+}
+
 function renderInterpolated(val) {
   if (val instanceof HtmlResponse) return val.html;
   if (Array.isArray(val)) return val.map(renderInterpolated).join('');
@@ -46,6 +53,7 @@ export function createRequestContext({
   req,
   method,
   url,
+  params,
   signal,
   sessionManager,
   broker,
@@ -77,6 +85,7 @@ export function createRequestContext({
     req,
     method: (method || req?.method || 'GET').toUpperCase(),
     url: url || (req ? new URL(req.url) : new URL('http://localhost/')),
+    params: params || {},
     signal: signal || req?.signal || new AbortController().signal,
     headersProxy,
     outgoingHeaders,
@@ -140,6 +149,12 @@ export const wire = {
   get url() {
     return getCtx().url;
   },
+  get params() {
+    return getCtx().params;
+  },
+  param(name) {
+    return getCtx().params?.[name];
+  },
   get headers() {
     return getCtx().headersProxy;
   },
@@ -156,6 +171,12 @@ export const wire = {
   },
   abort(status = 400, message = 'Aborted') {
     throw new ServinAbortError(status, message);
+  },
+  redirect(location, status = 302) {
+    if (!location) {
+      throw new TypeError('wire.redirect(location, status) requires a target URL or path');
+    }
+    throw new ServinRedirect(location, status);
   },
   undo(fn) {
     if (typeof fn === 'function') {

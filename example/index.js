@@ -1,5 +1,5 @@
 
-import { serve, param, wire } from "servin";
+import { serve, param, wire } from "../index.js";
 
 const tasksDb = new Map([
   [1, { id: 1, title: "Design domain tree", priority: "high", done: true }],
