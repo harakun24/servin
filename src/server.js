@@ -98,11 +98,84 @@ async function parseBodyPayload(req, webhookConfig) {
   }
 }
 
+async function resolveAliasChain({ initialMatch, initialUrl, routes, method, onGuard }) {
+  const visitedAliases = new Set();
+  let activeMatch = initialMatch;
+  let effectiveUrl = initialUrl;
+  let inheritedMeta = {};
+
+  while (activeMatch.status === 200 && activeMatch.route.aliasDescriptor) {
+    const aliasRoute = activeMatch.route;
+    if (visitedAliases.has(aliasRoute.nodeId) || visitedAliases.size >= 10) {
+      throw new ServinAbortError(500, 'Alias routing loop detected');
+    }
+    visitedAliases.add(aliasRoute.nodeId);
+
+    if (onGuard) {
+      await onGuard(aliasRoute.guards);
+    }
+    inheritedMeta = { ...inheritedMeta, ...aliasRoute.meta };
+
+    const desc = aliasRoute.aliasDescriptor;
+    const paramValues = aliasRoute.paramNames.map((name) => activeMatch.params[name]);
+    const queryObj = Object.fromEntries(effectiveUrl.searchParams.entries());
+
+    let rawTarget = typeof desc.target === 'function'
+      ? await desc.target(...paramValues, queryObj)
+      : desc.target;
+
+    if (typeof rawTarget !== 'string' || !rawTarget.trim()) {
+      throw new ServinAbortError(500, 'Invalid alias target');
+    }
+
+    if (typeof desc.target === 'string') {
+      rawTarget = rawTarget.replace(/\$([a-zA-Z_][a-zA-Z0-9_]*)/g, (full, name) => {
+        if (!Object.prototype.hasOwnProperty.call(activeMatch.params, name)) return full;
+        const val = String(activeMatch.params[name]);
+        return val.split('/').map(encodeURIComponent).join('/');
+      });
+    }
+
+    const normalizedTarget = rawTarget.startsWith('/') ? rawTarget : `/${rawTarget}`;
+    const targetUrl = new URL(normalizedTarget, effectiveUrl.origin);
+
+    const mergedParams = new URLSearchParams(targetUrl.searchParams);
+    for (const [k, v] of effectiveUrl.searchParams.entries()) {
+      mergedParams.set(k, v);
+    }
+    targetUrl.search = mergedParams.toString();
+    effectiveUrl = targetUrl;
+
+    if (method === 'GET' && effectiveUrl.pathname === '/@client.js') {
+      return {
+        isVirtualClient: true,
+        match: activeMatch,
+        url: effectiveUrl,
+        inheritedMeta
+      };
+    }
+
+    activeMatch = matchDomainRoute(routes, method, effectiveUrl.pathname);
+  }
+
+  return {
+    isVirtualClient: false,
+    match: activeMatch,
+    url: effectiveUrl,
+    inheritedMeta
+  };
+}
+
 export function serve(config = {}) {
   const port = config.port ?? 3000;
   const host = config.host ?? '127.0.0.1';
   const silent = config.silent ?? false;
-  const routes = compileDomainTree(config.api || {}, config.types || {}, config.static || null);
+  const routes = compileDomainTree(
+    config.api || {},
+    config.types || {},
+    config.static || null,
+    config.alias ?? config.aliases ?? null
+  );
   const virtualClientCode = generateVirtualClientModule(routes);
 
   const broker = new WebSocketBroker();
@@ -413,9 +486,9 @@ export function serve(config = {}) {
       });
     }
 
-    const { route, params } = match;
+    const { route: initialRoute, params: initialParams } = match;
 
-    if (route.meta.priority === 'low' && lagMonitor.isOverloaded()) {
+    if (initialRoute.meta.priority === 'low' && lagMonitor.isOverloaded()) {
       return buildErrorResponse({
         webReq,
         status: 503,
@@ -428,6 +501,7 @@ export function serve(config = {}) {
       req: webReq,
       method,
       url,
+      params: initialParams,
       signal: webReq.signal,
       sessionManager,
       broker,
@@ -439,18 +513,87 @@ export function serve(config = {}) {
 
     applyCorsHeaders(webReq, ctx.outgoingHeaders);
 
-    if (route.meta.sunset) {
-      ctx.outgoingHeaders.set('Deprecation', 'true');
-      ctx.outgoingHeaders.set('Sunset', new Date(route.meta.sunset).toUTCString());
-    }
-
     return wireStorage.run(ctx, async () => {
       let activeLimiterBucket = null;
       let limiterMax = 0;
+      let route = initialRoute;
 
       try {
         if (ctx.sessionHandle && !(sessionManager.store instanceof MemorySessionStore)) {
           await ctx.sessionHandle.preload();
+        }
+
+        const resolved = await resolveAliasChain({
+          initialMatch: match,
+          initialUrl: url,
+          routes,
+          method,
+          onGuard: async (guards) => {
+            for (const guardFn of guards) {
+              await guardFn();
+            }
+          }
+        });
+
+        if (resolved.isVirtualClient) {
+          if (!ctx.isSimulated) {
+            await ctx.sessionHandle?.commit(ctx.outgoingHeaders);
+          }
+          ctx.outgoingHeaders.set('Content-Type', 'application/javascript; charset=utf-8');
+          ctx.outgoingHeaders.set('Cache-Control', 'no-cache');
+          return new Response(virtualClientCode, { status: 200, headers: ctx.outgoingHeaders });
+        }
+
+        const activeMatch = resolved.match;
+        const effectiveUrl = resolved.url;
+
+        if (method === 'OPTIONS' && activeMatch.status === 405) {
+          const headers = new Headers({
+            Allow: activeMatch.allow,
+            'Access-Control-Allow-Methods': `${activeMatch.allow}, OPTIONS`,
+            'Access-Control-Allow-Headers': webReq.headers.get('access-control-request-headers') || 'Content-Type, Authorization, Idempotency-Key, X-Simulate'
+          });
+          applyCorsHeaders(webReq, headers);
+          return new Response(null, { status: 204, headers });
+        }
+
+        if (activeMatch.status === 404) {
+          return buildErrorResponse({
+            webReq,
+            status: 404,
+            defaultPayload: { error: 'Not Found' },
+            existingCtx: ctx
+          });
+        }
+        if (activeMatch.status === 405) {
+          return buildErrorResponse({
+            webReq,
+            status: 405,
+            defaultPayload: null,
+            existingCtx: ctx,
+            extraHeaders: { Allow: activeMatch.allow }
+          });
+        }
+
+        route = activeMatch.route;
+        const params = activeMatch.params;
+        ctx.url = effectiveUrl;
+        ctx.params = params;
+
+        const effectiveMeta = { ...resolved.inheritedMeta, ...route.meta };
+        if (effectiveMeta.priority === 'low' && lagMonitor.isOverloaded()) {
+          return buildErrorResponse({
+            webReq,
+            status: 503,
+            defaultPayload: { error: 'Service temporarily overloaded' },
+            existingCtx: ctx,
+            extraHeaders: { 'Retry-After': '2' }
+          });
+        }
+
+        if (effectiveMeta.sunset) {
+          ctx.outgoingHeaders.set('Deprecation', 'true');
+          ctx.outgoingHeaders.set('Sunset', new Date(effectiveMeta.sunset).toUTCString());
         }
 
         for (const guardFn of route.guards) {
@@ -459,7 +602,7 @@ export function serve(config = {}) {
 
         if (route.redirectDescriptor) {
           const paramValues = route.paramNames.map((name) => params[name]);
-          const queryObj = Object.fromEntries(url.searchParams.entries());
+          const queryObj = Object.fromEntries(effectiveUrl.searchParams.entries());
           const targetUrl = typeof route.redirectDescriptor.target === 'function'
             ? await route.redirectDescriptor.target(...paramValues, queryObj)
             : route.redirectDescriptor.target;
@@ -503,7 +646,7 @@ export function serve(config = {}) {
         }
 
         const paramValues = route.paramNames.map((name) => params[name]);
-        const queryObj = Object.fromEntries(url.searchParams.entries());
+        const queryObj = Object.fromEntries(effectiveUrl.searchParams.entries());
         const hasBody = method === 'POST' || method === 'PUT' || method === 'PATCH';
         const contentType = webReq.headers.get('content-type') || '';
         const isMultipart = contentType.toLowerCase().startsWith('multipart/form-data');
@@ -604,7 +747,7 @@ export function serve(config = {}) {
         }
 
         const cacheKey = route.nodeCache && method === 'GET'
-          ? `${route.nodeId}:${JSON.stringify(params)}:${url.search}`
+          ? `${route.nodeId}:${JSON.stringify(params)}:${effectiveUrl.search}`
           : null;
 
         if (cacheKey) {
@@ -633,7 +776,7 @@ export function serve(config = {}) {
 
         let rawResult;
         if (route.nodeInFlight && method === 'GET') {
-          const coalKey = `${route.nodeId}:${JSON.stringify(params)}:${url.search}`;
+          const coalKey = `${route.nodeId}:${JSON.stringify(params)}:${effectiveUrl.search}`;
           let sharedPromise = route.nodeInFlight.get(coalKey);
           if (!sharedPromise) {
             sharedPromise = executeHandler().finally(() => route.nodeInFlight.delete(coalKey));
@@ -734,8 +877,8 @@ export function serve(config = {}) {
         }
 
         let cleanOutput = applyRedaction(rawResult, config.redact);
-        if (method === 'GET' && url.searchParams.has('fields')) {
-          cleanOutput = applyFieldMask(cleanOutput, url.searchParams.get('fields'));
+        if (method === 'GET' && effectiveUrl.searchParams.has('fields')) {
+          cleanOutput = applyFieldMask(cleanOutput, effectiveUrl.searchParams.get('fields'));
         }
 
         if (cacheKey && !ctx.isSimulated) {
@@ -900,6 +1043,7 @@ export function serve(config = {}) {
       req: syntheticReq,
       method: 'WS',
       url,
+      params: match.params,
       sessionManager,
       broker,
       deferTracker
@@ -911,7 +1055,41 @@ export function serve(config = {}) {
           await ctx.sessionHandle.preload();
         }
 
-        for (const guardFn of match.route.guards) {
+        const resolved = await resolveAliasChain({
+          initialMatch: match,
+          initialUrl: url,
+          routes,
+          method: 'WS',
+          onGuard: async (guards) => {
+            for (const guardFn of guards) {
+              await guardFn();
+            }
+          }
+        });
+
+        if (resolved.match.status !== 200) {
+          tcpSocket.write('HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n');
+          tcpSocket.destroy();
+          emitAccessLog({
+            method: 'WS',
+            url,
+            status: 404,
+            durationMs: performance.now() - t0,
+            cached: false,
+            simulated: false,
+            requestId: ctx.requestId,
+            ip: clientIp,
+            userAgent
+          });
+          return;
+        }
+
+        const activeMatch = resolved.match;
+        const effectiveUrl = resolved.url;
+        ctx.url = effectiveUrl;
+        ctx.params = activeMatch.params;
+
+        for (const guardFn of activeMatch.route.guards) {
           await guardFn();
         }
 
@@ -937,7 +1115,7 @@ export function serve(config = {}) {
         });
 
         const sid = ctx.sessionHandle?.sid || null;
-        const wsCfg = match.route.meta.wsConfig || {};
+        const wsCfg = activeMatch.route.meta.wsConfig || {};
         const linearSocket = createLinearSocket(
           tcpSocket,
           head,
@@ -947,25 +1125,25 @@ export function serve(config = {}) {
         );
 
         const connData = {};
-        for (const [k, v] of url.searchParams.entries()) {
+        for (const [k, v] of effectiveUrl.searchParams.entries()) {
           if (k !== '__lastSeq') connData[k] = v;
         }
-        const lastSeq = Number(url.searchParams.get('__lastSeq') || 0);
+        const lastSeq = Number(effectiveUrl.searchParams.get('__lastSeq') || 0);
         const reqInfo = {
           raw: nodeReq,
-          url,
+          url: effectiveUrl,
           data: connData,
-          query: url.searchParams,
-          params: match.params,
+          query: effectiveUrl.searchParams,
+          params: activeMatch.params,
           lastSeq
         };
 
-        const declarativeRunner = getDeclarativeRuntime(match.route);
+        const declarativeRunner = getDeclarativeRuntime(activeMatch.route);
         if (declarativeRunner) {
           await declarativeRunner(linearSocket, reqInfo);
         } else {
-          const paramValues = match.route.paramNames.map((n) => match.params[n]);
-          await match.route.handler(...paramValues, linearSocket);
+          const paramValues = activeMatch.route.paramNames.map((n) => activeMatch.params[n]);
+          await activeMatch.route.handler(...paramValues, linearSocket);
         }
         linearSocket.close(1000, 'Session completed');
       } catch (err) {

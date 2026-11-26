@@ -78,6 +78,16 @@ export class RedirectDescriptor {
   }
 }
 
+export class AliasDescriptor {
+  constructor(target, options = {}) {
+    if (!target || (typeof target !== 'string' && typeof target !== 'function')) {
+      throw new TypeError('alias(target, options) requires a target URL/path string or resolver function');
+    }
+    this.target = target;
+    this.options = options;
+  }
+}
+
 export function parseDuration(input, fallbackMs = 0) {
   if (typeof input === 'number') return input;
   if (typeof input !== 'string') return fallbackMs;

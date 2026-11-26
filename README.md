@@ -28,6 +28,7 @@
    - [5.1 Static File & Folder Routing (`serveStatic` & `static`)](#51-static-file--folder-routing-servestatic--static)
    - [5.2 HTTP Redirects (`wire.redirect` & `redirect`)](#52-http-redirects-wireredirect--redirect)
    - [5.3 Custom Error Pages (`404`, `401`, `403`, `500`, etc.)](#53-custom-error-pages-404-401-403-500-etc)
+   - [5.4 Alias Routing (`alias`)](#54-alias-routing-alias)
 6. [Server Configuration (`serve`)](#6-server-configuration-serve)
    - [6.1 All `serve()` Options](#61-all-serve-options)
    - [6.2 Server Instance Control (`port`, `url`, `fetch`, `close`)](#62-server-instance-control-port-url-fetch-close)
@@ -1461,6 +1462,53 @@ await serve({
 | `error`   | `Error \| null` | Original thrown error instance if available.                                |
 | `wire`    | `object`        | Active `wire` ambient context handle.                                       |
 
+### 5.4 Alias Routing (`alias`)
+
+Unlike `redirect()` (which responds with a `301`/`302` redirect and changes the browser URL), **alias routing** maps a URL path internally to another static file or API route without changing the URL in the client's browser.
+
+**1. Config-level aliases via `serve({ alias })`:**
+
+```javascript
+import { serve } from "servin";
+
+await serve({
+  port: 3000,
+  static: {
+    "/": "./public", // contains home.html, pages/intro.html
+  },
+  alias: {
+    "/": "/home.html",
+    "/home": "/home.html",
+    "/docs/$slug": "/pages/$slug.html",
+  },
+});
+```
+
+**2. Tree-level `alias(target)` helper inside `api` (composable with `guard()` and `param()`):**
+
+```javascript
+import { serve, alias, guard, param } from "servin";
+
+await serve({
+  port: 3000,
+  static: { "/": "./public" },
+  api: {
+    home: alias("/home.html"),
+    secret: guard(requireAuth, alias("/secret.html")),
+    user: {
+      $id: param("int", alias((id) => `/v2/users/${id}`)),
+    },
+    v2: {
+      users: {
+        $id: param("int", {
+          get: (id) => ({ userId: id }),
+        }),
+      },
+    },
+  },
+});
+```
+
 ---
 
 ## 6. Server Configuration (`serve`)
@@ -1473,6 +1521,7 @@ await serve({
 | `host`            | `string`                               | `'127.0.0.1'`                 | Host interface to bind (use `'0.0.0.0'` inside Docker/containers).                        |
 | `api`             | `object`                               | `{}`                          | Root domain object defining all routes.                                                   |
 | `static`          | `string \| StaticDescriptor \| object` | `null`                        | Root or prefix-mapped static files/directories (e.g., `{ '/assets': './public' }`).       |
+| `alias`           | `object \| null`                       | `null`                        | Internal route aliases mapping paths to target paths/resolvers (e.g., `{ '/home': '/home.html' }`). |
 | `errors`          | `object`                               | `undefined`                   | Custom status handlers (`404`, `401`, `403`, `500`, `'4xx'`, `'5xx'`, `default`).         |
 | `types`           | `object`                               | `{}`                          | Named custom parameter types usable via `param('typeName', branch)`.                      |
 | `session`         | `object \| null`                       | `null`                        | Session config `{ secret, ttl, cookieName, rolling, secure, sameSite, store }`.           |

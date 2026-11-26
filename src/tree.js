@@ -1,9 +1,10 @@
-import { StaticRouteDescriptor, RedirectDescriptor } from './utils.js';
+import { StaticRouteDescriptor, RedirectDescriptor, AliasDescriptor } from './utils.js';
 
 const GUARD_META = Symbol('servin.guard');
 const PARAM_META = Symbol('servin.param');
 
 const HTTP_VERBS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS']);
+const ALL_ALIAS_VERBS = ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS', 'WS'];
 const META_KEYS = new Set([
   'expect',
   'cache',
@@ -129,7 +130,11 @@ function attachMeta(branch, { addGuard, setParam }) {
         return branch.apply(this, args);
       };
     }
-  } else if (branch instanceof StaticRouteDescriptor || branch instanceof RedirectDescriptor) {
+  } else if (
+    branch instanceof StaticRouteDescriptor ||
+    branch instanceof RedirectDescriptor ||
+    branch instanceof AliasDescriptor
+  ) {
     target = Object.assign(Object.create(Object.getPrototypeOf(branch)), branch);
   } else if (branch && typeof branch === 'object') {
     target = { ...branch };
@@ -176,6 +181,10 @@ export function redirect(target, status = 301) {
   return new RedirectDescriptor(target, status);
 }
 
+export function alias(target, options = {}) {
+  return new AliasDescriptor(target, options);
+}
+
 function parseVerbKey(key) {
   if (key === 'ws') return ['WS'];
   const parts = key.split('|').map((s) => s.trim().toUpperCase());
@@ -202,7 +211,7 @@ function classifySegment(seg, customTypes = {}, paramRule = null) {
   }
   return { type: 'static', priority: 0, value: seg, parse: null, raw: seg };
 }
-export function compileDomainTree(apiRoot = {}, customTypes = {}, staticConfig = null) {
+export function compileDomainTree(apiRoot = {}, customTypes = {}, staticConfig = null, aliasConfig = null) {
   const routes = [];
   let nodeCounter = 0;
 
@@ -248,6 +257,28 @@ export function compileDomainTree(apiRoot = {}, customTypes = {}, staticConfig =
       paramNames,
       verbs,
       redirectDescriptor: descriptor,
+      handler: null,
+      isAsyncGen: false,
+      guards: descGuards,
+      meta: inheritedMeta,
+      nodeCache: null,
+      ancestorCaches: [],
+      nodeInFlight: null,
+      nodeIdempotency: null
+    });
+  }
+
+  function registerAliasDescriptor(descriptor, fullSegments, dotPath, inheritedGuards, inheritedMeta, verbs = ALL_ALIAS_VERBS) {
+    const paramNames = fullSegments.filter((s) => s.type !== 'static').map((s) => s.param);
+    const descGuards = [...inheritedGuards, ...(descriptor[GUARD_META] || [])];
+
+    routes.push({
+      nodeId: `alias_${++nodeCounter}`,
+      dotPath: dotPath.join('.'),
+      segments: fullSegments,
+      paramNames,
+      verbs,
+      aliasDescriptor: descriptor,
       handler: null,
       isAsyncGen: false,
       guards: descGuards,
@@ -306,6 +337,11 @@ export function compileDomainTree(apiRoot = {}, customTypes = {}, staticConfig =
       const verbs = parseVerbKey(key);
       if (verbs && value instanceof RedirectDescriptor) {
         registerRedirectDescriptor(value, segments, [...dotPath, key], guards, meta, verbs);
+        continue;
+      }
+
+      if (verbs && value instanceof AliasDescriptor) {
+        registerAliasDescriptor(value, segments, [...dotPath, key], guards, meta, verbs);
         continue;
       }
 
@@ -370,6 +406,12 @@ export function compileDomainTree(apiRoot = {}, customTypes = {}, staticConfig =
         continue;
       }
 
+      if (value instanceof AliasDescriptor) {
+        const seg = classifySegment(key, customTypes, paramRule);
+        registerAliasDescriptor(value, [...segments, seg], [...dotPath, key], guards, meta);
+        continue;
+      }
+
       if (typeof value === 'function') {
         const seg = classifySegment(key, customTypes, paramRule);
         const childSegments = [...segments, seg];
@@ -420,6 +462,25 @@ export function compileDomainTree(apiRoot = {}, customTypes = {}, staticConfig =
           : [];
         registerStaticDescriptor(desc, prefixSegs, ['static', ...prefixSegs.map((s) => s.raw)], [], {}, prefixSegs.length === 0);
       }
+    }
+  }
+
+  if (aliasConfig && typeof aliasConfig === 'object') {
+    for (const [sourcePath, target] of Object.entries(aliasConfig)) {
+      const desc = target instanceof AliasDescriptor
+        ? target
+        : new AliasDescriptor(target);
+      const cleanPrefix = sourcePath.replace(/^\/+|\/+$/g, '');
+      const prefixSegs = cleanPrefix
+        ? cleanPrefix.split('/').map((s) => classifySegment(s, customTypes))
+        : [];
+      registerAliasDescriptor(
+        desc,
+        prefixSegs,
+        ['alias', ...prefixSegs.map((s) => s.raw)],
+        [],
+        {}
+      );
     }
   }
 
@@ -877,7 +938,7 @@ export function matchDomainRoute(routes, method, pathname) {
 
 export function generateVirtualClientModule(routes) {
   const manifest = routes
-    .filter((r) => !r.staticDescriptor && !r.redirectDescriptor)
+    .filter((r) => !r.staticDescriptor && !r.redirectDescriptor && !r.aliasDescriptor)
     .map((r) => ({
       dotPath: r.dotPath,
       verbs: r.verbs,
