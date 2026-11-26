@@ -4,7 +4,7 @@
 
 `servin` lets you build HTTP APIs, static websites, HTML pages, Server-Sent Events (SSE), and WebSockets using plain JavaScript functions and nested object trees. Instead of manually wiring string paths, `(req, res)` handlers, and `next()` middleware chains, you express your backend as a clean JavaScript object hierarchy while `servin` handles routing, parameter type coercion, self-invalidating caching, session persistence, rate limiting, and zero-build frontend client generation automatically.
 
----
+[see the real example usage here](https://github.com/harakun24/webserver-example)
 
 ## Table of Contents
 
