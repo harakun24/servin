@@ -22,6 +22,7 @@ import {
 import {
   WebSocketBroker,
   createLinearSocket,
+  createDeclarativeWsRuntime,
   performWsHandshake
 } from './websocket.js';
 import {
@@ -105,11 +106,23 @@ export function serve(config = {}) {
   const virtualClientCode = generateVirtualClientModule(routes);
 
   const broker = new WebSocketBroker();
+  const declarativeRuntimes = new Map();
   const sessionManager = config.session ? new SessionManager(config.session, broker) : null;
   const lagMonitor = createLagMonitor(config.lagThresholdMs ?? 60);
   const rateBuckets = new Map();
   const activeDefers = new Set();
   const recordedTests = new Map();
+
+  function getDeclarativeRuntime(route) {
+    const cfg = route.meta?.wsConfig;
+    if (!cfg || typeof cfg !== 'object' || (!cfg.open && !cfg.actions && !cfg.close && !cfg.state)) {
+      return null;
+    }
+    if (!declarativeRuntimes.has(route.nodeId)) {
+      declarativeRuntimes.set(route.nodeId, createDeclarativeWsRuntime(broker, cfg));
+    }
+    return declarativeRuntimes.get(route.nodeId);
+  }
 
   const deferTracker = {
     track(promise) {
@@ -444,7 +457,6 @@ export function serve(config = {}) {
           await guardFn();
         }
 
-        // Handle declarative RedirectDescriptor
         if (route.redirectDescriptor) {
           const paramValues = route.paramNames.map((name) => params[name]);
           const queryObj = Object.fromEntries(url.searchParams.entries());
@@ -462,7 +474,6 @@ export function serve(config = {}) {
           });
         }
 
-        // Handle StaticRouteDescriptor (file or folder)
         if (route.staticDescriptor) {
           const staticRes = await buildStaticHttpResponse(
             route.staticDescriptor,
@@ -548,7 +559,6 @@ export function serve(config = {}) {
           ? [...paramValues, payload, queryObj]
           : [...paramValues, queryObj];
 
-        // SSE Async Generator Streaming
         if (route.isAsyncGen) {
           if (!ctx.isSimulated) await ctx.sessionHandle?.commit(ctx.outgoingHeaders);
           ctx.outgoingHeaders.set('Content-Type', 'text/event-stream; charset=utf-8');
@@ -580,7 +590,6 @@ export function serve(config = {}) {
           return new Response(stream, { status: ctx.statusCode, headers: ctx.outgoingHeaders });
         }
 
-        // Idempotency Check for Mutations
         const idemHeader = webReq.headers.get('idempotency-key');
         const idemKey = route.nodeIdempotency && idemHeader ? `${route.nodeId}:${idemHeader}` : null;
         if (idemKey && !ctx.isSimulated) {
@@ -594,7 +603,6 @@ export function serve(config = {}) {
           }
         }
 
-        // Self-Invalidating Cache Lookup for GET
         const cacheKey = route.nodeCache && method === 'GET'
           ? `${route.nodeId}:${JSON.stringify(params)}:${url.search}`
           : null;
@@ -648,7 +656,6 @@ export function serve(config = {}) {
           rawResult = await executeHandler();
         }
 
-        // Invalidate node cache and ancestor caches on successful mutations
         if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(method) && !ctx.isSimulated) {
           if (route.nodeCache) {
             const prefix = `${route.nodeId}:${JSON.stringify(params)}:`;
@@ -930,16 +937,36 @@ export function serve(config = {}) {
         });
 
         const sid = ctx.sessionHandle?.sid || null;
+        const wsCfg = match.route.meta.wsConfig || {};
         const linearSocket = createLinearSocket(
           tcpSocket,
           head,
           broker,
-          match.route.meta.wsConfig,
+          wsCfg,
           sid
         );
 
-        const paramValues = match.route.paramNames.map((n) => match.params[n]);
-        await match.route.handler(...paramValues, linearSocket);
+        const connData = {};
+        for (const [k, v] of url.searchParams.entries()) {
+          if (k !== '__lastSeq') connData[k] = v;
+        }
+        const lastSeq = Number(url.searchParams.get('__lastSeq') || 0);
+        const reqInfo = {
+          raw: nodeReq,
+          url,
+          data: connData,
+          query: url.searchParams,
+          params: match.params,
+          lastSeq
+        };
+
+        const declarativeRunner = getDeclarativeRuntime(match.route);
+        if (declarativeRunner) {
+          await declarativeRunner(linearSocket, reqInfo);
+        } else {
+          const paramValues = match.route.paramNames.map((n) => match.params[n]);
+          await match.route.handler(...paramValues, linearSocket);
+        }
         linearSocket.close(1000, 'Session completed');
       } catch (err) {
         if (err instanceof ServinAbortError) {

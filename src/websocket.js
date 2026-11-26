@@ -3,6 +3,40 @@ import { parseBytes, parseDuration } from './utils.js';
 
 const WS_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
 
+function createRingBuffer(capacity = 100) {
+  const cap = Math.max(1, capacity);
+  const items = new Array(cap);
+  let start = 0;
+  let size = 0;
+
+  return {
+    push(entry) {
+      const idx = (start + size) % cap;
+      items[idx] = entry;
+      if (size === cap) {
+        start = (start + 1) % cap;
+      } else {
+        size += 1;
+      }
+    },
+    getSince(afterSeq) {
+      if (afterSeq <= 0) return [];
+      if (size === 0) return null;
+      const oldestSeq = items[start].seq;
+      const newestSeq = items[(start + size - 1) % cap].seq;
+      if (afterSeq < oldestSeq - 1 || afterSeq > newestSeq) {
+        return null;
+      }
+      const out = [];
+      for (let i = 0; i < size; i += 1) {
+        const item = items[(start + i) % cap];
+        if (item.seq > afterSeq) out.push(item);
+      }
+      return out;
+    }
+  };
+}
+
 function encodeFrame(data, isBinary = false) {
   const payload = isBinary
     ? Buffer.from(data)
@@ -38,6 +72,18 @@ function encodeControlFrame(opcode, payload = Buffer.alloc(0)) {
   return Buffer.concat([header, payload]);
 }
 
+function setExclusiveRoom(socket, targetRoom) {
+  if (!targetRoom) return;
+  for (const joined of [...socket.rooms]) {
+    if (joined !== targetRoom) {
+      socket.leave(joined);
+    }
+  }
+  if (!socket.rooms.has(targetRoom)) {
+    socket.join(targetRoom);
+  }
+}
+
 export class WebSocketBroker {
   constructor() {
     this.topics = new Map();
@@ -69,6 +115,28 @@ export class WebSocketBroker {
     }
   }
 
+  publishAll(data, excludeSocket = null, maxBufferedBytes = 0) {
+    const isBinary = data instanceof Uint8Array;
+    const envelope = isBinary
+      ? data
+      : { type: 'broadcast', global: true, payload: data };
+    const frame = encodeFrame(envelope, isBinary);
+    const sentTo = new Set();
+
+    for (const set of this.topics.values()) {
+      for (const client of set) {
+        if (sentTo.has(client)) continue;
+        sentTo.add(client);
+        if (client === excludeSocket || !client.isOpen) continue;
+        if (maxBufferedBytes && client.bufferedAmount > maxBufferedBytes) {
+          client.close(1008, 'Backpressure limit exceeded');
+          continue;
+        }
+        client.rawSocket.write(frame);
+      }
+    }
+  }
+
   bindSession(sid, socket) {
     if (!sid) return;
     if (!this.sessionSockets.has(sid)) this.sessionSockets.set(sid, new Set());
@@ -95,7 +163,17 @@ export class WebSocketBroker {
 }
 
 export function createLinearSocket(tcpSocket, headBuffer, broker, config = {}, sessionId = null) {
-  const maxPayload = parseBytes(config.maxPayload || '1mb', 1024 ** 2);
+  if (typeof tcpSocket.setNoDelay === 'function') {
+    tcpSocket.setNoDelay(true);
+  }
+
+  const maxPayload = typeof config.maxPayloadBytes === 'number'
+    ? config.maxPayloadBytes
+    : parseBytes(config.maxPayload || '1mb', 1024 ** 2);
+  const maxEventsPerSec = config.maxEventsPerSec ?? 0;
+  const maxBufferedBytes = typeof config.maxBufferedBytes === 'number'
+    ? config.maxBufferedBytes
+    : parseBytes(config.maxBuffered || '1mb', 1024 ** 2);
   const heartbeatMs = config.heartbeat ? parseDuration(config.heartbeat, 0) : 0;
   const binaryMode = Boolean(config.binary);
 
@@ -107,6 +185,8 @@ export function createLinearSocket(tcpSocket, headBuffer, broker, config = {}, s
   let recvBuffer = headBuffer && headBuffer.length > 0 ? Buffer.from(headBuffer) : Buffer.alloc(0);
   let fragmentedChunks = [];
   let fragmentedOpcode = 0;
+  let rateWindowStart = Date.now();
+  let rateCount = 0;
 
   const wakeReader = () => {
     if (waitResolver) {
@@ -130,6 +210,8 @@ export function createLinearSocket(tcpSocket, headBuffer, broker, config = {}, s
 
   const sessionSocket = {
     rawSocket: tcpSocket,
+    state: {},
+    rooms: joinedTopics,
     get isOpen() {
       return !closed && !tcpSocket.destroyed;
     },
@@ -144,13 +226,53 @@ export function createLinearSocket(tcpSocket, headBuffer, broker, config = {}, s
       joinedTopics.delete(topic);
       broker.unsubscribe(topic, sessionSocket);
     },
-    broadcast(topic, data) {
-      broker.publish(topic, data, sessionSocket);
+    broadcast(topicOrData, maybeData, opts = {}) {
+      if (typeof topicOrData === 'string') {
+        const topic = topicOrData;
+        const data = maybeData;
+        const options = (opts && typeof opts === 'object') ? opts : {};
+        const set = broker.topics.get(topic);
+        if (!set || set.size === 0) return;
+
+        const isBinary = data instanceof Uint8Array;
+        const envelope = isBinary
+          ? data
+          : { type: 'broadcast', room: topic, global: false, payload: data };
+        const frame = encodeFrame(envelope, isBinary);
+        const exclude = options.except ?? null;
+
+        for (const client of set) {
+          if (client === exclude || closed || client.rawSocket.destroyed) continue;
+          if (maxBufferedBytes && (client.rawSocket.writableLength || 0) > maxBufferedBytes) {
+            client.close(1008, 'Backpressure limit exceeded');
+            continue;
+          }
+          client.rawSocket.write(frame);
+        }
+        return;
+      }
+
+      const data = topicOrData;
+      const options = (maybeData && typeof maybeData === 'object') ? maybeData : {};
+      const exclude = options.except ?? null;
+      broker.publishAll(data, exclude, maxBufferedBytes);
+    },
+    to(topic) {
+      return {
+        broadcast(data, opts = {}) {
+          sessionSocket.broadcast(topic, data, opts);
+        }
+      };
     },
     send(data) {
-      if (!sessionSocket.isOpen) return;
+      if (closed || tcpSocket.destroyed) return false;
+      if (maxBufferedBytes && (tcpSocket.writableLength || 0) > maxBufferedBytes) {
+        sessionSocket.close(1008, 'Backpressure limit exceeded');
+        return false;
+      }
       const isBin = data instanceof Uint8Array || binaryMode;
       tcpSocket.write(encodeFrame(data, isBin));
+      return true;
     },
     close(code = 1000, reason = '') {
       if (closed) return;
@@ -187,13 +309,26 @@ export function createLinearSocket(tcpSocket, headBuffer, broker, config = {}, s
         return;
       }
       alive = false;
-      if (sessionSocket.isOpen) {
+      if (!closed && !tcpSocket.destroyed) {
         tcpSocket.write(encodeControlFrame(0x9));
       }
     }, heartbeatMs);
   }
 
   const deliverMessage = (opcode, payload) => {
+    if (maxEventsPerSec > 0) {
+      const now = Date.now();
+      if (now - rateWindowStart >= 1000) {
+        rateWindowStart = now;
+        rateCount = 0;
+      }
+      rateCount += 1;
+      if (rateCount > maxEventsPerSec) {
+        sessionSocket.send({ type: 'error', message: 'RATE_LIMIT_EXCEEDED' });
+        return;
+      }
+    }
+
     if (opcode === 0x2 || binaryMode) {
       messageQueue.push(new Uint8Array(payload));
     } else {
@@ -254,7 +389,7 @@ export function createLinearSocket(tcpSocket, headBuffer, broker, config = {}, s
         return;
       }
       if (opcode === 0x9) {
-        if (sessionSocket.isOpen) tcpSocket.write(encodeControlFrame(0xa, payload));
+        if (!closed && !tcpSocket.destroyed) tcpSocket.write(encodeControlFrame(0xa, payload));
         continue;
       }
       if (opcode === 0xa) {
@@ -287,6 +422,197 @@ export function createLinearSocket(tcpSocket, headBuffer, broker, config = {}, s
 
   processFrames();
   return sessionSocket;
+}
+
+export function createDeclarativeWsRuntime(broker, routeConfig = {}) {
+  const activeSockets = new Set();
+  const roomStates = new Map();
+  const bufferSize = routeConfig.sync?.bufferSize ?? 100;
+
+  function ensureRoomState(roomName, initialState = {}) {
+    if (!roomStates.has(roomName)) {
+      roomStates.set(roomName, {
+        state: structuredClone(initialState),
+        seq: 0,
+        ring: createRingBuffer(bufferSize)
+      });
+    }
+    return roomStates.get(roomName);
+  }
+
+  function sendSnapshot(socket, roomName) {
+    const entry = roomStates.get(roomName);
+    if (!entry || !socket.isOpen) return;
+    socket.send({
+      type: 'sync_snapshot',
+      room: roomName,
+      seq: entry.seq,
+      state: entry.state
+    });
+  }
+
+  function commit(roomName, meta, mutator, initialState = {}) {
+    const entry = ensureRoomState(roomName, initialState);
+    mutator(entry.state);
+    entry.seq += 1;
+
+    entry.ring.push({
+      seq: entry.seq,
+      meta: meta ?? null,
+      state: structuredClone(entry.state)
+    });
+
+    const members = broker.topics.get(roomName);
+    if (!members) return entry.seq;
+
+    for (const peer of members) {
+      if (peer.isOpen) {
+        peer.send({
+          type: 'sync_patch',
+          room: roomName,
+          seq: entry.seq,
+          meta: meta ?? null,
+          state: entry.state
+        });
+      }
+    }
+    return entry.seq;
+  }
+
+  function createSocketsCollection(excludeSocket = null) {
+    return {
+      where(predicate) {
+        const matched = [];
+        for (const s of activeSockets) {
+          if (!s.isOpen) continue;
+          if (excludeSocket && s === excludeSocket) continue;
+          if (!predicate || predicate(s)) matched.push(s);
+        }
+        return {
+          sockets: matched,
+          count: matched.length,
+          send(data) {
+            for (const s of matched) {
+              s.send({ type: 'event', payload: data });
+            }
+          }
+        };
+      }
+    };
+  }
+
+  return async function runDeclarativeSocket(socket, reqInfo = {}) {
+    activeSockets.add(socket);
+    const connData = reqInfo.data || {};
+    const clientLastSeq = Number(reqInfo.lastSeq || 0);
+
+    if (connData.room && !socket.state.room) {
+      socket.state.room = String(connData.room);
+    }
+
+    const resolveRoom = (explicitRoom) =>
+      explicitRoom || socket.state?.room || connData.room || 'default';
+
+    const activeRoom = resolveRoom();
+    if (activeRoom) {
+      socket.state.room = activeRoom;
+      setExclusiveRoom(socket, activeRoom);
+    }
+
+    if (typeof routeConfig.open === 'function') {
+      await routeConfig.open(socket, reqInfo);
+    }
+
+    const postOpenRoom = resolveRoom();
+    if (postOpenRoom) {
+      socket.state.room = postOpenRoom;
+      setExclusiveRoom(socket, postOpenRoom);
+    }
+
+    if (typeof routeConfig.state === 'function') {
+      const initState = await routeConfig.state(socket, reqInfo);
+      const entry = ensureRoomState(postOpenRoom, initState || {});
+
+      if (clientLastSeq > 0) {
+        const missed = entry.ring.getSince(clientLastSeq);
+        if (Array.isArray(missed)) {
+          for (const item of missed) {
+            socket.send({
+              type: 'sync_patch',
+              room: postOpenRoom,
+              seq: item.seq,
+              meta: item.meta,
+              state: item.state,
+              replayed: true
+            });
+          }
+        } else {
+          sendSnapshot(socket, postOpenRoom);
+        }
+      } else {
+        sendSnapshot(socket, postOpenRoom);
+      }
+    }
+
+    const helpers = {
+      commit,
+      sockets: createSocketsCollection(socket),
+      resync(roomName) {
+        const target = resolveRoom(roomName);
+        if (target) {
+          socket.state.room = target;
+          setExclusiveRoom(socket, target);
+        }
+        sendSnapshot(socket, target);
+      }
+    };
+
+    try {
+      for await (const msg of socket) {
+        if (!msg || typeof msg !== 'object') continue;
+
+        if (msg.type === 'resync') {
+          const target = resolveRoom(msg.room);
+          if (target) {
+            socket.state.room = target;
+            setExclusiveRoom(socket, target);
+          }
+          sendSnapshot(socket, target);
+          continue;
+        }
+
+        if (msg.type === 'action' && routeConfig.actions && routeConfig.actions[msg.name]) {
+          const actionDef = routeConfig.actions[msg.name];
+          try {
+            if (typeof actionDef === 'function') {
+              await actionDef(msg.payload, socket, helpers);
+            } else if (actionDef && typeof actionDef.run === 'function') {
+              const validPayload = typeof actionDef.validate === 'function'
+                ? await actionDef.validate(msg.payload, socket)
+                : msg.payload;
+              await actionDef.run(validPayload, socket, helpers);
+            }
+            const nextRoom = resolveRoom();
+            if (nextRoom) {
+              socket.state.room = nextRoom;
+              setExclusiveRoom(socket, nextRoom);
+            }
+          } catch (err) {
+            socket.send({
+              type: 'error',
+              action: msg.name,
+              message: err?.message || 'Action failed'
+            });
+          }
+        }
+      }
+    } finally {
+      activeSockets.delete(socket);
+      if (typeof routeConfig.close === 'function') {
+        await routeConfig.close(socket, reqInfo);
+      }
+    }
+  };
 }
 
 export function performWsHandshake(req, tcpSocket, extraHeaders = new Headers()) {

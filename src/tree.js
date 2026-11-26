@@ -202,7 +202,6 @@ function classifySegment(seg, customTypes = {}, paramRule = null) {
   }
   return { type: 'static', priority: 0, value: seg, parse: null, raw: seg };
 }
-
 export function compileDomainTree(apiRoot = {}, customTypes = {}, staticConfig = null) {
   const routes = [];
   let nodeCounter = 0;
@@ -282,6 +281,27 @@ export function compileDomainTree(apiRoot = {}, customTypes = {}, staticConfig =
 
     for (const [key, value] of Object.entries(node)) {
       if (META_KEYS.has(key)) continue;
+
+      if (key === 'ws' && value && typeof value === 'object') {
+        const paramNames = segments.filter((s) => s.type !== 'static').map((s) => s.param);
+        const wsMeta = { ...meta, wsConfig: value };
+        routes.push({
+          nodeId: `${nodeId}_ws`,
+          dotPath: [...dotPath, key].join('.'),
+          segments,
+          paramNames,
+          verbs: ['WS'],
+          handler: typeof value.handler === 'function' ? value.handler : null,
+          isAsyncGen: false,
+          guards,
+          meta: wsMeta,
+          nodeCache: null,
+          ancestorCaches,
+          nodeInFlight: null,
+          nodeIdempotency: null
+        });
+        continue;
+      }
 
       const verbs = parseVerbKey(key);
       if (verbs && value instanceof RedirectDescriptor) {
@@ -498,6 +518,363 @@ export function matchDomainRoute(routes, method, pathname) {
   return { status: 404 };
 }
 
+// export function generateVirtualClientModule(routes) {
+//   const manifest = routes
+//     .filter((r) => !r.staticDescriptor && !r.redirectDescriptor)
+//     .map((r) => ({
+//       dotPath: r.dotPath,
+//       verbs: r.verbs,
+//       isAsyncGen: r.isAsyncGen
+//     }));
+
+//   return `// Auto-generated Zero-Build Virtual ESM Client by servin
+// const MANIFEST = ${JSON.stringify(manifest, null, 2)};
+// const ORIGIN = new URL(import.meta.url).origin;
+// const HTTP_VERBS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS']);
+
+// function parseMethod(key) {
+//   if (key === 'ws') return 'WS';
+//   const upper = key.split('|')[0].toUpperCase();
+//   return HTTP_VERBS.has(upper) ? upper : null;
+// }
+
+// function isOptionsBag(arg) {
+//   return Boolean(
+//     arg &&
+//     typeof arg === 'object' &&
+//     !Array.isArray(arg) &&
+//     !(arg instanceof FormData) &&
+//     !(arg instanceof URLSearchParams) &&
+//     !(arg instanceof Blob) &&
+//     Object.prototype.hasOwnProperty.call(arg, 'headers')
+//   );
+// }
+
+// function createNode(chain) {
+//   return new Proxy(function () {}, {
+//     get(_, prop) {
+//       if (typeof prop === 'symbol') return undefined;
+//       return createNode([...chain, prop]);
+//     },
+//     apply(_, __, args) {
+//       const argQueue = [...args];
+//       const dotKey = chain.join('.');
+//       const entry = MANIFEST.find((m) => m.dotPath === dotKey);
+//       const lastKey = chain[chain.length - 1];
+//       let method = parseMethod(lastKey);
+//       const pathSegments = method ? chain.slice(0, -1) : [...chain];
+
+//       if (!method) {
+//         method = entry?.verbs?.[0] || 'POST';
+//       }
+
+//       const resolvedParts = [];
+//       for (const seg of pathSegments) {
+//         if (seg.startsWith('$')) {
+//           const val = argQueue.shift();
+//           resolvedParts.push(encodeURIComponent(String(val ?? '')));
+//         } else {
+//           resolvedParts.push(encodeURIComponent(seg));
+//         }
+//       }
+
+//       const pathname = '/' + resolvedParts.join('/');
+
+//       if (method === 'WS') {
+//         const wsOrigin = ORIGIN.replace(/^http/, 'ws');
+//         const firstArg = argQueue.shift();
+//         let connData = (firstArg && typeof firstArg === 'object' && !Array.isArray(firstArg))
+//           ? { ...firstArg }
+//           : {};
+
+//         let socket = null;
+//         let manualClose = false;
+//         let hasConnectedOnce = false;
+//         let lastSeq = 0;
+//         let currentState = null;
+
+//         const queue = [];
+//         let notify = null;
+//         let closed = false;
+
+//         const listeners = {
+//           open: new Set(),
+//           close: new Set(),
+//           error: new Set(),
+//           event: new Set(),
+//           broadcast: new Set()
+//         };
+//         const syncCallbacks = new Set();
+
+//         const emitLocal = (type, detail) => {
+//           const set = listeners[type];
+//           if (!set) return;
+//           for (const fn of set) fn(detail);
+//         };
+
+//         const notifySync = (meta) => {
+//           for (const fn of syncCallbacks) {
+//             fn(currentState, meta);
+//           }
+//         };
+
+//         const buildWsUrl = () => {
+//           const u = new URL(wsOrigin + pathname);
+//           for (const [k, v] of Object.entries(connData)) {
+//             if (v !== undefined && v !== null) {
+//               u.searchParams.set(k, String(v));
+//             }
+//           }
+//           if (lastSeq > 0) {
+//             u.searchParams.set('__lastSeq', String(lastSeq));
+//           }
+//           return u.toString();
+//         };
+
+//         const connect = () => {
+//           if (socket && socket.readyState <= WebSocket.OPEN) {
+//             socket.close(1000, 'refresh');
+//           }
+//           manualClose = false;
+//           closed = false;
+
+//           const ws = new WebSocket(buildWsUrl());
+//           socket = ws;
+
+//           ws.addEventListener('open', () => {
+//             const reconnected = hasConnectedOnce;
+//             hasConnectedOnce = true;
+//             emitLocal('open', { reconnected });
+//           });
+
+//           ws.addEventListener('message', (ev) => {
+//             let data = ev.data;
+//             if (typeof data === 'string') {
+//               try { data = JSON.parse(data); } catch {}
+//             }
+
+//             if (data && typeof data === 'object') {
+//               if (data.type === 'sync_snapshot') {
+//                 currentState = data.state;
+//                 if (typeof data.seq === 'number') lastSeq = data.seq;
+//                 notifySync({
+//                   seq: data.seq,
+//                   room: data.room,
+//                   fullSnapshot: true,
+//                   replayed: false
+//                 });
+//                 return;
+//               }
+//               if (data.type === 'sync_patch') {
+//                 currentState = data.state;
+//                 if (typeof data.seq === 'number') lastSeq = data.seq;
+//                 notifySync({
+//                   seq: data.seq,
+//                   room: data.room,
+//                   meta: data.meta,
+//                   fullSnapshot: false,
+//                   replayed: Boolean(data.replayed)
+//                 });
+//                 return;
+//               }
+//               if (data.type === 'error') {
+//                 emitLocal('error', data);
+//                 return;
+//               }
+//               if (data.type === 'broadcast') {
+//                 emitLocal('broadcast', data);
+//                 return;
+//               }
+//               if (data.type === 'event') {
+//                 emitLocal('event', data.payload);
+//                 return;
+//               }
+//             }
+
+//             queue.push(data);
+//             if (notify) { notify(); notify = null; }
+//           });
+
+//           ws.addEventListener('close', (ev) => {
+//             closed = true;
+//             emitLocal('close', { code: ev.code, reason: ev.reason, manual: manualClose });
+//             if (notify) { notify(); notify = null; }
+//             if (!manualClose) {
+//               setTimeout(() => connect(), 1000);
+//             }
+//           });
+
+//           ws.addEventListener('error', () => {
+//             emitLocal('error', { message: 'WEBSOCKET_ERROR' });
+//           });
+//         };
+
+//         connect();
+
+//         const clientWs = {
+//           on(event, cb) {
+//             if (listeners[event]) listeners[event].add(cb);
+//             return clientWs;
+//           },
+//           off(event, cb) {
+//             if (listeners[event]) listeners[event].delete(cb);
+//             return clientWs;
+//           },
+//           sync(cb) {
+//             syncCallbacks.add(cb);
+//             if (currentState !== null) {
+//               cb(currentState, { seq: lastSeq, fullSnapshot: true, replayed: false });
+//             }
+//             return clientWs;
+//           },
+//           emit(name, payload = {}) {
+//             if (socket && socket.readyState === WebSocket.OPEN) {
+//               socket.send(JSON.stringify({ type: 'action', name, payload }));
+//             }
+//             return clientWs;
+//           },
+//           refresh(nextData = null) {
+//             if (nextData && typeof nextData === 'object') {
+//               connData = { ...connData, ...nextData };
+//             }
+//             lastSeq = 0;
+//             manualClose = true;
+//             connect();
+//             return clientWs;
+//           },
+//           resync(room = null) {
+//             if (socket && socket.readyState === WebSocket.OPEN) {
+//               socket.send(JSON.stringify({ type: 'resync', room }));
+//             }
+//             return clientWs;
+//           },
+//           send(data) {
+//             const payload = (data instanceof Uint8Array || typeof data === 'string')
+//               ? data
+//               : JSON.stringify(data);
+//             if (socket && socket.readyState === WebSocket.OPEN) {
+//               socket.send(payload);
+//             } else if (socket) {
+//               socket.addEventListener('open', () => socket.send(payload), { once: true });
+//             }
+//           },
+//           close(code = 1000, reason = '') {
+// console.log({code,reason})
+//             manualClose = true;
+//             if (socket) socket.close(code, reason);
+//           },
+//           async *[Symbol.asyncIterator]() {
+//             while (!closed || queue.length > 0) {
+//               if (queue.length > 0) {
+//                 yield queue.shift();
+//               } else {
+//                 await new Promise((r) => { notify = r; });
+//               }
+//             }
+//           }
+//         };
+
+//         return clientWs;
+//       }
+
+//       let customHeaders = {};
+//       let payload;
+//       let queryObj;
+
+//       const hasBody = method === 'POST' || method === 'PUT' || method === 'PATCH';
+
+//       if (hasBody) {
+//         const first = argQueue.shift();
+//         if (isOptionsBag(first)) {
+//           customHeaders = { ...first.headers };
+//           payload = first.body !== undefined ? first.body : argQueue.shift();
+//           queryObj = first.query !== undefined ? first.query : argQueue.shift();
+//         } else {
+//           payload = first;
+//           const second = argQueue.shift();
+//           if (isOptionsBag(second)) {
+//             customHeaders = { ...second.headers };
+//             queryObj = second.query !== undefined ? second.query : argQueue.shift();
+//           } else {
+//             queryObj = second;
+//           }
+//         }
+//       } else {
+//         const first = argQueue.shift();
+//         if (isOptionsBag(first)) {
+//           customHeaders = { ...first.headers };
+//           queryObj = first.query !== undefined ? first.query : argQueue.shift();
+//         } else {
+//           queryObj = first;
+//           const second = argQueue.shift();
+//           if (isOptionsBag(second)) {
+//             customHeaders = { ...second.headers };
+//           }
+//         }
+//       }
+
+//       const url = new URL(ORIGIN + pathname);
+//       if (queryObj && typeof queryObj === 'object') {
+//         for (const [k, v] of Object.entries(queryObj)) {
+//           if (v !== undefined && v !== null) url.searchParams.set(k, String(v));
+//         }
+//       }
+
+//       if (entry?.isAsyncGen) {
+//         return (async function* () {
+//           const res = await fetch(url, {
+//             method,
+//             headers: { Accept: 'text/event-stream', ...customHeaders },
+//             credentials: 'include'
+//           });
+//           if (!res.ok) throw Object.assign(new Error(await res.text()), { status: res.status });
+//           const reader = res.body.getReader();
+//           const decoder = new TextDecoder();
+//           let buffer = '';
+//           while (true) {
+//             const { done, value } = await reader.read();
+//             if (done) break;
+//             buffer += decoder.decode(value, { stream: true });
+//             const blocks = buffer.split('\\n\\n');
+//             buffer = blocks.pop() || '';
+//             for (const block of blocks) {
+//               const line = block.split('\\n').find((l) => l.startsWith('data:'));
+//               if (line) yield JSON.parse(line.slice(5).trim());
+//             }
+//           }
+//         })();
+//       }
+
+//       return (async () => {
+//         const headers = { ...customHeaders };
+//         let body;
+//         if (hasBody && payload !== undefined) {
+//           if (!Object.keys(headers).some((k) => k.toLowerCase() === 'content-type')) {
+//             headers['Content-Type'] = 'application/json';
+//           }
+//           body = typeof payload === 'string' ? payload : JSON.stringify(payload);
+//         }
+//         const res = await fetch(url, { method, headers, body, credentials: 'include' });
+//         if (res.status === 204) return null;
+//         const text = await res.text();
+//         let data = text;
+//         try { data = JSON.parse(text); } catch {}
+//         if (!res.ok) {
+//           throw Object.assign(new Error(data?.error || text || 'Request failed'), {
+//             status: res.status,
+//             data
+//           });
+//         }
+//         return data;
+//       })();
+//     }
+//   });
+// }
+
+// export const api = createNode([]);
+// export default api;`;
+// }
+
 export function generateVirtualClientModule(routes) {
   const manifest = routes
     .filter((r) => !r.staticDescriptor && !r.redirectDescriptor)
@@ -562,34 +939,215 @@ function createNode(chain) {
 
       if (method === 'WS') {
         const wsOrigin = ORIGIN.replace(/^http/, 'ws');
-        const ws = new WebSocket(wsOrigin + pathname);
+        const firstArg = argQueue.shift();
+        let connData = (firstArg && typeof firstArg === 'object' && !Array.isArray(firstArg))
+          ? { ...firstArg }
+          : {};
+
+        let activeRoom = connData.room ? String(connData.room) : null;
+        let socket = null;
+        let manualClose = false;
+        let hasConnectedOnce = false;
+        let lastSeq = 0;
+        let currentState = null;
+
         const queue = [];
         let notify = null;
         let closed = false;
 
-        ws.onmessage = (ev) => {
-          let data = ev.data;
-          if (typeof data === 'string') {
-            try { data = JSON.parse(data); } catch {}
-          }
-          queue.push(data);
-          if (notify) { notify(); notify = null; }
+        const listeners = {
+          open: new Set(),
+          close: new Set(),
+          error: new Set(),
+          event: new Set(),
+          broadcast: new Set()
         };
-        ws.onclose = () => {
-          closed = true;
-          if (notify) { notify(); notify = null; }
+        const syncCallbacks = new Set();
+
+        const emitLocal = (type, detail) => {
+          const set = listeners[type];
+          if (!set) return;
+          for (const fn of set) fn(detail);
         };
 
-        return {
+        const notifySync = (meta) => {
+          for (const fn of syncCallbacks) {
+            fn(currentState, meta);
+          }
+        };
+
+        const buildWsUrl = () => {
+          const u = new URL(wsOrigin + pathname);
+          for (const [k, v] of Object.entries(connData)) {
+            if (v !== undefined && v !== null) {
+              u.searchParams.set(k, String(v));
+            }
+          }
+          if (lastSeq > 0) {
+            u.searchParams.set('__lastSeq', String(lastSeq));
+          }
+          return u.toString();
+        };
+
+        const isAllowedRoom = (msgRoom) => {
+          if (!activeRoom) return true;
+          return Boolean(msgRoom) && String(msgRoom) === activeRoom;
+        };
+
+        const connect = () => {
+          if (socket && socket.readyState <= WebSocket.OPEN) {
+            socket.close(1000, 'refresh');
+          }
+          manualClose = false;
+          closed = false;
+
+          const ws = new WebSocket(buildWsUrl());
+          socket = ws;
+
+          ws.addEventListener('open', () => {
+            const reconnected = hasConnectedOnce;
+            hasConnectedOnce = true;
+            emitLocal('open', { reconnected });
+          });
+
+          ws.addEventListener('message', (ev) => {
+            let data = ev.data;
+            if (typeof data === 'string') {
+              try { data = JSON.parse(data); } catch {}
+            }
+
+            if (data && typeof data === 'object') {
+              if (data.type === 'sync_snapshot') {
+                if (!isAllowedRoom(data.room)) return;
+                currentState = data.state;
+                if (typeof data.seq === 'number') lastSeq = data.seq;
+                notifySync({
+                  seq: data.seq,
+                  room: data.room,
+                  fullSnapshot: true,
+                  replayed: false
+                });
+                return;
+              }
+              if (data.type === 'sync_patch') {
+                if (!isAllowedRoom(data.room)) return;
+                currentState = data.state;
+                if (typeof data.seq === 'number') lastSeq = data.seq;
+                notifySync({
+                  seq: data.seq,
+                  room: data.room,
+                  meta: data.meta,
+                  fullSnapshot: false,
+                  replayed: Boolean(data.replayed)
+                });
+                return;
+              }
+              if (data.type === 'error') {
+                emitLocal('error', data);
+                return;
+              }
+              if (data.type === 'broadcast') {
+                if (!data.global && !isAllowedRoom(data.room)) return;
+                emitLocal('broadcast', data);
+                return;
+              }
+              if (data.type === 'event') {
+                emitLocal('event', data.payload);
+                return;
+              }
+              if (typeof data.event === 'string' && listeners[data.event]) {
+                emitLocal(data.event, data.data !== undefined ? data.data : data);
+                return;
+              }
+            }
+
+            queue.push(data);
+            if (notify) { notify(); notify = null; }
+          });
+
+          ws.addEventListener('close', (ev) => {
+            closed = true;
+            emitLocal('close', { code: ev.code, reason: ev.reason, manual: manualClose });
+            if (notify) { notify(); notify = null; }
+            if (!manualClose) {
+              setTimeout(() => connect(), 1000);
+            }
+          });
+
+          ws.addEventListener('error', () => {
+            emitLocal('error', { message: 'WEBSOCKET_ERROR' });
+          });
+        };
+
+        connect();
+
+        const clientWs = {
+          on(event, cb) {
+            if (!listeners[event]) listeners[event] = new Set();
+            listeners[event].add(cb);
+            return clientWs;
+          },
+          off(event, cb) {
+            if (listeners[event]) listeners[event].delete(cb);
+            return clientWs;
+          },
+          sync(cb) {
+            syncCallbacks.add(cb);
+            if (currentState !== null) {
+              cb(currentState, {
+                seq: lastSeq,
+                room: activeRoom,
+                fullSnapshot: true,
+                replayed: false
+              });
+            }
+            return clientWs;
+          },
+          emit(name, payload = {}) {
+            if (socket && socket.readyState === WebSocket.OPEN) {
+              socket.send(JSON.stringify({ type: 'action', name, payload }));
+            }
+            return clientWs;
+          },
+          refresh(nextData = null) {
+            if (nextData && typeof nextData === 'object') {
+              connData = { ...connData, ...nextData };
+              if (nextData.room !== undefined) {
+                activeRoom = nextData.room ? String(nextData.room) : null;
+              }
+            }
+            currentState = null;
+            lastSeq = 0;
+            manualClose = true;
+            connect();
+            return clientWs;
+          },
+          resync(room = null) {
+            if (room !== null && room !== undefined) {
+              activeRoom = String(room);
+              connData.room = activeRoom;
+              currentState = null;
+              lastSeq = 0;
+            }
+            if (socket && socket.readyState === WebSocket.OPEN) {
+              socket.send(JSON.stringify({ type: 'resync', room: room ?? activeRoom }));
+            }
+            return clientWs;
+          },
           send(data) {
             const payload = (data instanceof Uint8Array || typeof data === 'string')
               ? data
               : JSON.stringify(data);
-            if (ws.readyState === WebSocket.OPEN) ws.send(payload);
-            else ws.addEventListener('open', () => ws.send(payload), { once: true });
+            if (socket && socket.readyState === WebSocket.OPEN) {
+              socket.send(payload);
+            } else if (socket) {
+              socket.addEventListener('open', () => socket.send(payload), { once: true });
+            }
           },
-          close(code, reason) {
-            ws.close(code, reason);
+          close(code=1000, reason = '') {
+          console.log({code,reason})
+            manualClose = true;
+            if (socket) socket.close(code, reason);
           },
           async *[Symbol.asyncIterator]() {
             while (!closed || queue.length > 0) {
@@ -601,6 +1159,8 @@ function createNode(chain) {
             }
           }
         };
+
+        return clientWs;
       }
 
       let customHeaders = {};

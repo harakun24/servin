@@ -1,6 +1,6 @@
 {
   "name": "@dim24/servin",
-  "version": "0.2.2",
+  "version": "1.0.0",
   "description": "A modern, zero-dependency JavaScript web server built around *Domain-Tree Projection.",
   "homepage": "https://github.com/harakun24/servin#readme",
   "bugs": {

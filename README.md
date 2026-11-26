@@ -505,7 +505,7 @@ const updated = await api.tasks.$id.patch(1, { done: true });
 await api.tasks.$id.delete(1);
 ```
 
-### 4.3 Step 3: Consuming SSE Streams & WebSockets on the Client
+### 4.3 Step 3: Consuming SSE Streams
 
 `/@client.js` also translates Server-Sent Events and WebSockets into standard JavaScript `for await...of` async iterators:
 
@@ -516,14 +516,764 @@ import { api } from "/@client.js";
 for await (const tick of api.clock.get()) {
   console.log("Server tick:", tick);
 }
+```
 
-// 2. Consuming a WebSocket endpoint (async ws(room, socket))
-const room = api.chat.$room.ws("general");
-room.send({ text: "Hello everyone!" });
+---
 
-for await (const message of room) {
-  console.log("Chat message:", message);
+# Servin WebSocket Guide
+
+`servin` provides a declarative, integrated directly into your domain routing tree (`api.<route>.ws`) and virtual ESM client (`/@client.js`). It is designed to work cleanly alongside standard HTTP routes, sessions, and route guards while supporting per-socket state, rooms, targeted socket filtering, payload/rate/backpressure guards, action validation, optional room state with sequence tracking (`seq`), ring-buffer replay on reconnect, and explicit client sync/refresh/resync controls.
+
+## Feature Overview & Scope
+
+### Included in the Final WebSocket API
+
+- **Declarative `open`, `actions`, and `close` blocks:** Separates connection lifecycle hooks from named client-callable actions.
+
+- **Per-socket context (`socket.state`):** Mutable state attached to a single socket instance across `open`, `actions`, and `close`.
+
+- **Direct connection data (`api.<route>.ws({ ... })`):** Passes initial connection data directly as an object without wrapping it in `{ query: { ... } }`, mapped automatically to the WebSocket upgrade URL.
+
+- **Built-in rooms & broadcasting (`join`, `leave`, `to(room).broadcast(...)`):** Groups sockets into channels and broadcasts events with optional exclusions (such as `except: socket`).
+
+- **Targeted socket filtering (`sockets.where(predicate).send(...)`):** Filters active sockets dynamically by predicate and sends targeted messages without manual loops or room-wide broadcasts.
+
+- **Guards & action validation:** Enforces payload size limits (`maxPayloadBytes`), inbound message rate limits (`maxEventsPerSec`), outbound backpressure limits (`maxBufferedBytes`), and per-action `validate` hooks.
+
+- **Optional room state & `commit`:** Maintains shared state per room when `state(socket, req)` is defined, incrementing a monotonic `seq` counter on every `commit` and storing entries in a bounded ring buffer.
+
+- **Automatic sequence sync, ring-buffer replay & snapshot fallback:** Tracks mutation sequence numbers, replays missed patches upon reconnect via `__lastSeq`, and falls back to a full snapshot when `__lastSeq` falls outside the ring buffer window.
+
+- **Standalone client `.sync(callback)`:** Delivers synchronized state and metadata to user-managed client code without coupling the framework to DOM elements or rendering libraries.
+
+- **Connection & sync controls (`ws.refresh(...)` and `ws.resync(...)`):** `ws.refresh(nextData)` closes and reopens the connection (optionally updating connection data), while `ws.resync(room)` requests a fresh full snapshot without closing the active socket.
+
+## Guide
+
+### Step 1: Basic Connection (`open`, `actions`, `close`, `.on()`, and `.emit()`)
+
+Start with a minimal WebSocket endpoint on a route node (for example, `api.chat.ws`) and connect from the browser using `api.chat.ws()`.
+
+#### Server
+
+```
+import { serve } from './server.js';
+
+await serve({
+  port: 3000,
+  api: {
+    chat: {
+      ws: {
+        //handle when client connect
+        open(socket) {
+          socket.send({ event: 'welcome', message: 'Connected to chat' });
+        },
+        //list all events
+        actions: {
+          //each event
+          ping(payload, socket) {
+            //send back to the client
+            socket.send({
+              event: 'pong',
+              payload: data,
+              sentAt: payload?.sentAt ?? null,
+              serverTime: Date.now()
+            });
+          }
+        },
+        close() {
+          // Clean up any non-room resources tied to this connection
+        }
+      }
+    }
+  }
+});
+
+```
+
+#### Client (`/@client.js`)
+
+```
+import { api } from '/@client.js';
+
+const ws = api.chat.ws();
+
+ws
+  .on('open', ({ reconnected }) => {
+    console.log(reconnected ? 'Reconnected to chat' : 'Connected to chat');
+    //emit an event
+    ws.emit('ping', { data:"hello" });
+  })
+  .on('event', (data) => {
+    console.log('Received from server:', data);
+  })
+  .on('close', ({ code, reason, manual }) => {
+    console.log('Socket closed:', { code, reason, manual });
+  });
+
+```
+
+#### How It Works
+
+- Defining `ws` as an object inside an API node compiles a route with verb `WS` at that node's path (`/chat`).
+
+- On the client, `ws.emit(actionName, payload)` serializes `{ type: 'action', name, payload }` and dispatches the matching handler in `actions`.
+
+- Server-sent targeted events (`socket.send(...)`) arrive on the client under the `'event'` listener.
+
+### Step 2: Direct Connection Data & Per-Socket State (`socket.state`)
+
+Pass initial connection data directly to `api.<route>.ws({ ... })` without a `{ query: { ... } }` wrapper. On the server, read those values from `req.data` and store connection-specific properties on `socket.state`.
+
+#### Server
+
+```
+api: {
+  presence: {
+    ws: {
+      open(socket, req) {
+        socket.state = {
+          userId: req.data.userId || 'anonymous',
+          role: req.data.role || 'member',
+          room: req.data.room || 'lobby'
+        };
+
+        socket.join(socket.state.room);
+        socket.send({
+          event: 'session_ready',
+          state: socket.state
+        });
+      },
+
+      actions: {
+        updateRole(payload, socket) {
+          if (!payload?.role) return;
+          socket.state.role = String(payload.role);
+          socket.send({
+            event: 'role_updated',
+            role: socket.state.role
+          });
+        }
+      },
+
+      close(socket) {
+        if (socket.state?.room) {
+          socket.leave(socket.state.room);
+        }
+      }
+    }
+  }
 }
+
+```
+
+#### Client
+
+```
+import { api } from '/@client.js';
+
+const ws = api.presence.ws({
+  userId: 'usr_42',
+  role: 'member',
+  room: 'lobby'
+});
+
+ws
+  .on('open', () => {
+    ws.emit('updateRole', { role: 'editor' });
+  })
+  .on('event', (msg) => {
+    console.log('Presence event:', msg);
+  });
+
+```
+
+#### How It Works
+
+- `api.presence.ws({ userId: 'usr_42', room: 'lobby' })` encodes top-level keys directly onto the WebSocket handshake URL query string.
+
+- `req.data` exposes those connection parameters (excluding internal `__lastSeq`) cleanly in `open` and `state`.
+
+- `socket.state` is a plain object scoped to a single socket connection, making it safe for per-user attributes like `userId`, `role`, or active `room`.
+
+### Step 3: Rooms & Broadcasting (`join`, `leave`, `to(room).broadcast`)
+
+Group sockets into rooms using `socket.join(room)` and `socket.leave(room)`, and publish updates to room members via `socket.to(room).broadcast(data, options)`.
+
+#### Server
+
+```
+api: {
+  rooms: {
+    ws: {
+      open(socket, req) {
+        const room = req.data.room || 'general';
+        const user = req.data.user || 'guest';
+
+        socket.state = { room, user };
+        socket.join(room);
+
+        socket.to(room).broadcast(
+          { data:here },
+          { except: socket } //if you need to excluded
+        );
+      },
+
+      actions: {
+        switchRoom(payload, socket) {
+          const nextRoom = String(payload?.room || '').trim();
+          if (!nextRoom) return;
+
+          const prevRoom = socket.state.room;
+          if (prevRoom) {
+            socket.leave(prevRoom);
+            socket.to(prevRoom).broadcast(
+              { type: 'member_left', user: socket.state.user, to: nextRoom },
+              { except: socket }
+            );
+          }
+
+          socket.state.room = nextRoom;
+          socket.join(nextRoom);
+          socket.to(nextRoom).broadcast(
+            { type: 'member_joined', user: socket.state.user, from: prevRoom },
+            { except: socket }
+          );
+        },
+
+        say(payload, socket) {
+          const { room, user } = socket.state;
+          if (!room) return;
+
+          socket.to(room).broadcast(
+            { type: 'message', from: user, text: String(payload?.text ?? '') },
+            { except: socket }
+          );
+        }
+      },
+
+      close(socket) {
+        const { room, user } = socket.state || {};
+        if (room) {
+          socket.leave(room);
+          socket.to(room).broadcast(
+            { type: 'member_left', user },
+            { except: socket }
+          );
+        }
+      }
+    }
+  }
+}
+
+```
+
+#### Client
+
+```
+import { api } from '/@client.js';
+
+const ws = api.rooms.ws({ room: 'general', user: 'maya' });
+
+ws
+  .on('broadcast', ({ room, payload }) => {
+    console.log(`[${room}]`, payload);
+  })
+  .on('open', () => {
+    ws.emit('say', { text: 'Hello room!' });
+    ws.emit('switchRoom', { room: 'engineering' });
+  });
+
+```
+
+#### How It Works
+
+- `socket.to(room).broadcast(data, { except })` sends a `'broadcast'` envelope `{ type: 'broadcast', room, payload }` to open sockets subscribed to `room`.
+
+- Passing `{ except: socket }` prevents echoing a peer's own action back to the sender. By default, `except` excludes the acting `socket`.
+
+- Always call `socket.leave(room)` when switching rooms or in `close` so room memberships stay accurate.
+
+### Step 4: Targeted Socket Filtering (`sockets.where(...)`)
+
+When you need to reach a subset of active connections based on dynamic attributes (such as role, workspace, or tenant) rather than an entire room, use `sockets.where(predicate).send(data)` from the action helpers object.
+
+#### Server
+
+```
+api: {
+  support: {
+    ws: {
+      open(socket, req) {
+        socket.state = {
+          userId: req.data.userId || 'guest',
+          role: req.data.role || 'customer',
+          tier: req.data.tier || 'standard'
+        };
+      },
+
+      actions: {
+        escalate(payload, socket, { sockets }) {
+          const target = sockets.where(
+            (peer) =>
+              peer !== socket &&
+              peer.state?.role === 'agent' &&
+              peer.state?.tier === 'enterprise'
+          );
+
+          target.send({
+            type: 'escalation',
+            from: socket.state.userId,
+            issue: String(payload?.issue ?? '')
+          });
+
+          socket.send({
+            type: 'escalation_ack',
+            notifiedAgents: target.count
+          });
+        }
+      }
+    }
+  }
+}
+
+```
+
+#### Client
+
+```
+import { api } from '/@client.js';
+
+const ws = api.support.ws({
+  userId: 'cust_99',
+  role: 'customer',
+  tier: 'enterprise'
+});
+
+ws
+  .on('event', (msg) => {
+    if (msg.type === 'escalation_ack') {
+      console.log(`Notified ${msg.notifiedAgents} enterprise agents`);
+    }
+    if (msg.type === 'escalation') {
+      console.log('Incoming escalation:', msg);
+    }
+  })
+  .on('open', () => {
+    ws.emit('escalate', { issue: 'Production webhook timeout' });
+  });
+
+```
+
+#### How It Works
+
+- `sockets.where(predicate)` evaluates `predicate(peerSocket)` across active sockets and returns `{ sockets, count, send(data) }`.
+
+- Calling `.send(data)` delivers `{ type: 'event', payload: data }` to every matched socket.
+
+- Because `socket.state` is checked inside the predicate, filtering reflects live state changes made during the session.
+
+### Step 5: Guards, Backpressure & Action Validation
+
+Protect your endpoint against oversized frames, message floods, slow consumers, and malformed action payloads using route-level guard options and action `{ validate, run }` definitions.
+
+#### Server
+
+```
+api: {
+  tasks: {
+    ws: {
+      maxPayloadBytes: 16384,     // Reject incoming frames larger than 16 KB
+      maxEventsPerSec: 20,        // Cap inbound messages per socket per second
+      maxBufferedBytes: 131072,   // Close slow sockets exceeding 128 KB outbound buffer
+
+      open(socket, req) {
+        socket.state = {
+          room: req.data.room || 'sprint-1',
+          actor: req.data.actor || 'member'
+        };
+        socket.join(socket.state.room);
+      },
+
+      actions: {
+        addTask: {
+          validate(payload) {
+            const title = String(payload?.title ?? '').trim();
+            if (!title) {
+              throw new Error('VALIDATION_TITLE_REQUIRED');
+            }
+            if (title.length > 120) {
+              throw new Error('VALIDATION_TITLE_TOO_LONG');
+            }
+            return { title };
+          },
+
+          run(cleanPayload, socket, { commit }) {
+            const { room, actor } = socket.state;
+            commit(room, { op: 'add_task', actor }, (draft) => {
+              draft.tasks = draft.tasks || [];
+              draft.tasks.push({
+                id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+                title: cleanPayload.title,
+                completed: false
+              });
+            });
+          }
+        }
+      }
+    }
+  }
+}
+
+```
+
+#### Client
+
+```
+import { api } from '/@client.js';
+
+const ws = api.tasks.ws({ room: 'sprint-1', actor: 'alex' });
+
+ws
+  .on('error', (err) => {
+    console.error('Server rejected request:', err);
+  })
+  .on('open', () => {
+    // Triggers validation error -> sent back via 'error' event
+    ws.emit('addTask', { title: '   ' });
+
+    // Passes validation -> mutates room state via commit
+    ws.emit('addTask', { title: 'Ship WebSocket guide' });
+  });
+
+```
+
+#### How It Works
+
+- `maxPayloadBytes` checks incoming WebSocket frame payload length before parsing.
+
+- `maxEventsPerSec` tracks a 1-second window per socket and emits `{ type: 'error', message: 'RATE_LIMIT_EXCEEDED' }` when exceeded.
+
+- `maxBufferedBytes` monitors `socket.bufferedAmount` (`tcpSocket.writableLength`) before writing outbound frames, closing sockets that fall too far behind.
+
+- When an action is defined as `{ validate, run }`, `validate` runs first; if it throws, `run` is skipped and `{ type: 'error', action, message }` is sent back to the caller socket.
+
+### Step 6: Room State, `commit`, `seq`, Ring Buffer Replay & `.sync(...)`
+
+Add a `state(socket, req)` hook to enable room-level synchronized state. Every `commit(room, meta, mutator)` mutates the room state in place, increments `seq`, records the update in a bounded ring buffer (`sync.bufferSize`), and pushes state updates to room subscribers.
+
+#### Server
+
+```
+api: {
+  board: {
+    ws: {
+      sync: {
+        bufferSize: 100
+      },
+
+      state(socket, req) {
+        const room = req.data.room || 'default-board';
+        return {
+          room,
+          items: []
+        };
+      },
+
+      open(socket, req) {
+        const room = req.data.room || 'default-board';
+        socket.state = {
+          room,
+          user: req.data.user || 'guest'
+        };
+        if (!socket.rooms.has(room)) {
+          socket.join(room);
+        }
+      },
+
+      actions: {
+        toggleItem: {
+          validate(payload) {
+            const id = String(payload?.id ?? '').trim();
+            if (!id) throw new Error('ITEM_ID_REQUIRED');
+            return { id };
+          },
+          run({ id }, socket, { commit }) {
+            const { room, user } = socket.state;
+            commit(room, { op: 'toggle_item', by: user, id }, (draft) => {
+              const item = draft.items.find((entry) => entry.id === id);
+              if (item) {
+                item.done = !item.done;
+              }
+            });
+          }
+        },
+
+        createItem: {
+          validate(payload) {
+            const label = String(payload?.label ?? '').trim();
+            if (!label) throw new Error('LABEL_REQUIRED');
+            return { label };
+          },
+          run({ label }, socket, { commit }) {
+            const { room, user } = socket.state;
+            commit(room, { op: 'create_item', by: user }, (draft) => {
+              draft.items.push({
+                id: `item_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+                label,
+                done: false
+              });
+            });
+          }
+        }
+      }
+    }
+  }
+}
+
+```
+
+#### Client
+
+```
+import { api } from '/@client.js';
+
+let latestBoardState = null;
+
+const ws = api.board.ws({
+  room: 'default-board',
+  user: 'maya'
+});
+
+ws.sync((state, meta) => {
+  // Store and render state in your own application layer
+  latestBoardState = state;
+  console.log('State synced:', {
+    seq: meta.seq,
+    room: meta.room,
+    fullSnapshot: meta.fullSnapshot,
+    replayed: meta.replayed,
+    meta: meta.meta ?? null
+  });
+  renderBoardView(latestBoardState);
+});
+
+```
+
+#### How It Works
+
+- On initial connection (when `__lastSeq` is `0`), the server sends a `sync_snapshot` (`fullSnapshot: true, replayed: false`) with the current `seq` and `state`.
+
+- On `commit`, the server increments `seq`, pushes `{ seq, meta, state }` into the room's ring buffer, and sends `sync_patch` (`fullSnapshot: false, replayed: false`) to members of that room.
+
+- On automatic reconnect, the client appends `__lastSeq=<lastSeq>` to the WebSocket URL:
+  - If `lastSeq` is within the ring buffer range, missed entries are replayed in order with `replayed: true`.
+
+  - If `lastSeq` is too old or outside the ring buffer range, the server falls back to sending a `sync_snapshot` (`fullSnapshot: true`).
+
+- `.sync(callback)` is standalone: if a snapshot has already arrived when `.sync` is attached, `callback` is immediately invoked with the current state so late subscribers stay up to date.
+
+### Step 7: Refreshing Connections & Manual Resync (`ws.refresh(...)` & `ws.resync(...)`)
+
+Use `ws.refresh(nextData)` when you want to close and reopen the socket—such as moving to another room or changing connection parameters—and `ws.resync(room)` when you want a fresh snapshot without closing the active connection.
+
+#### Client
+
+```
+import { api } from '/@client.js';
+
+const ws = api.board.ws({
+  room: 'sprint-1',
+  user: 'maya'
+});
+
+ws.sync((state, meta) => {
+  console.log(`Room ${meta.room} @ seq ${meta.seq}`, state);
+});
+
+// Close and reopen the connection with updated connection data (no { query: ... } wrapper)
+function moveToSprint(nextRoom) {
+  ws.refresh({ room: nextRoom });
+}
+
+// Request a full state snapshot while keeping the current WebSocket open
+function requestFreshSnapshot() {
+  ws.resync('sprint-2');
+}
+
+```
+
+#### How It Works
+
+- `ws.refresh(nextData)` merges any provided `nextData` object into the connection data, resets `lastSeq` to `0`, closes the existing socket cleanly, and opens a new connection with the updated URL.
+
+- `ws.resync(room)` sends `{ type: 'resync', room }` over the open socket, prompting the server to send a `sync_snapshot` for the target room.
+
+### Step 8: Complete End-to-End Example
+
+Below is a complete, self-contained example combining direct connection data, `socket.state`, rooms & `broadcast`, `sockets.where(...)`, guards & `validate`, room state + `commit` + `seq` replay, `.sync(...)`, `.refresh(...)`, and `.resync(...)`.
+
+#### Server (`server.js` entry)
+
+```
+import { serve } from './server.js';
+
+await serve({
+  port: 3000,
+  api: {
+    workspace: {
+      ws: {
+        maxPayloadBytes: 32768,
+        maxEventsPerSec: 25,
+        maxBufferedBytes: 262144,
+        sync: {
+          bufferSize: 100
+        },
+
+        state(socket, req) {
+          const room = req.data.room || 'general';
+          return {
+            room,
+            notes: []
+          };
+        },
+
+        open(socket, req) {
+          const room = req.data.room || 'general';
+          const user = req.data.user || 'guest';
+          const role = req.data.role || 'member';
+
+          socket.state = { room, user, role };
+          if (!socket.rooms.has(room)) {
+            socket.join(room);
+          }
+
+          socket.to(room).broadcast(
+            { event: 'presence', status: 'online', user },
+            { except: socket }
+          );
+        },
+
+        actions: {
+          addNote: {
+            validate(payload) {
+              const text = String(payload?.text ?? '').trim();
+              if (!text) throw new Error('NOTE_TEXT_REQUIRED');
+              return { text };
+            },
+            run({ text }, socket, { commit }) {
+              const { room, user } = socket.state;
+              commit(room, { op: 'add_note', author: user }, (draft) => {
+                draft.notes.push({
+                  id: `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+                  author: user,
+                  text
+                });
+              });
+            }
+          },
+
+          removeNote: {
+            validate(payload) {
+              const id = String(payload?.id ?? '').trim();
+              if (!id) throw new Error('NOTE_ID_REQUIRED');
+              return { id };
+            },
+            run({ id }, socket, { commit }) {
+              const { room, user } = socket.state;
+              commit(room, { op: 'remove_note', actor: user, id }, (draft) => {
+                draft.notes = draft.notes.filter((note) => note.id !== id);
+              });
+            }
+          },
+
+          pingRole: {
+            validate(payload) {
+              const role = String(payload?.role ?? '').trim();
+              if (!role) throw new Error('TARGET_ROLE_REQUIRED');
+              return {
+                role,
+                message: String(payload?.message ?? '')
+              };
+            },
+            run({ role, message }, socket, { sockets }) {
+              sockets
+                .where((peer) => peer !== socket && peer.state?.role === role)
+                .send({
+                  event: 'role_ping',
+                  from: socket.state.user,
+                  message
+                });
+            }
+          }
+        },
+
+        close(socket) {
+          const { room, user } = socket.state || {};
+          if (room) {
+            socket.leave(room);
+            socket.to(room).broadcast(
+              { event: 'presence', status: 'offline', user },
+              { except: socket }
+            );
+          }
+        }
+      }
+    }
+  }
+});
+
+```
+
+#### Client (`client.js`)
+
+```
+import { api } from '/@client.js';
+
+let workspaceState = null;
+
+const ws = api.workspace.ws({
+  room: 'general',
+  user: 'maya',
+  role: 'lead'
+});
+
+ws
+  .on('open', ({ reconnected }) => {
+    console.log(reconnected ? 'Reconnected to workspace' : 'Connected to workspace');
+  })
+  .on('broadcast', ({ room, payload }) => {
+    console.log(`Broadcast in ${room}:`, payload);
+  })
+  .on('event', (payload) => {
+    console.log('Targeted event:', payload);
+  })
+  .on('error', (err) => {
+    console.error('WS error:', err);
+  })
+  .sync((state, meta) => {
+    workspaceState = state;
+    console.log('Synced state:', {
+      seq: meta.seq,
+      room: meta.room,
+      fullSnapshot: meta.fullSnapshot,
+      replayed: meta.replayed,
+      notesCount: workspaceState?.notes?.length ?? 0
+    });
+  });
+
+// Add a note to the current room state
+ws.emit('addNote', { text: 'Kickoff sync notes' });
+
+// Send a targeted message only to other connected sockets with role 'lead'
+ws.emit('pingRole', { role: 'lead', message: 'Check latest notes' });
+
+// Switch room with a fresh connection and updated connection data
+ws.refresh({ room: 'planning' });
+
+// Request a full snapshot without closing the connection
+ws.resync('planning');
+
 ```
 
 ---
@@ -1390,76 +2140,6 @@ const exportsApi = {
 
 ---
 
-## 11. Linear WebSockets & Pub/Sub
-
-### 11.1 Step 1: Minimal Echo WebSocket (`ws` & `for await`)
-
-Add a `ws(socket)` method anywhere in your tree and iterate over incoming messages linearly with `for await`:
-
-```javascript
-const echo = {
-  // WS /echo
-  async ws(socket) {
-    socket.send({ status: "connected" });
-
-    for await (const msg of socket) {
-      socket.send({ echoed: msg });
-    }
-  },
-};
-```
-
-### 11.2 Step 2: Rooms & Pub/Sub Broadcasting (`socket.join`, `wire.publish`)
-
-Subscribe sockets to named topics and broadcast messages from either WebSocket handlers or HTTP routes:
-
-```javascript
-const chat = {
-  $room: {
-    // WS /chat/:room
-    async ws(room, socket) {
-      socket.join(`room:${room}`);
-      socket.broadcast(`room:${room}`, { event: "joined" });
-
-      for await (const msg of socket) {
-        wire.publish(`room:${room}`, { text: msg.text });
-      }
-    },
-  },
-
-  // Any HTTP route can also publish to WebSocket subscribers!
-  announce: {
-    post({ room, text }) {
-      wire.publish(`room:${room}`, { announcement: text });
-      return { sent: true };
-    },
-  },
-};
-```
-
-### 11.3 Step 3: Guarded WebSockets & `wsConfig`
-
-Combine `guard()`, `param()`, and `wsConfig` (`heartbeat`, `maxPayload`, `binary`) on the same branch:
-
-```javascript
-const liveStream = guard(requireAuth, {
-  wsConfig: {
-    maxPayload: "256kb",
-    heartbeat: "30s",
-  },
-  $channelId: param("int", {
-    async ws(channelId, socket) {
-      socket.join(`ch:${channelId}`);
-      for await (const msg of socket) {
-        socket.broadcast(`ch:${channelId}`, msg);
-      }
-    },
-  }),
-});
-```
-
----
-
 ## 12. Streaming File Uploads (`wire.multipart` & `rawBody`)
 
 **1. Streaming `multipart/form-data` without buffering in RAM:**
@@ -1613,7 +2293,6 @@ await replay(
 | `wire.multipart(opts)`       | `(opts?) => AsyncGenerator`       | Iterates streaming `multipart/form-data` fields and files sequentially.                                                  |
 | `wire.session`               | `Proxy \| null`                   | Lazy encrypted session object (`.rotate()`, `.bind(userId)`, or `wire.session = null`).                                  |
 | `wire.sessions`              | `{ list, revokeOthers }`          | Multi-device session listing and remote session revocation helpers.                                                      |
-| `wire.publish(topic, data)`  | `(string, any) => void`           | Broadcasts a message to all WebSocket clients subscribed to `topic`.                                                     |
 | `wire.cost(points)`          | `(number) => void`                | Adjusts rate-limit quota consumption for the current request.                                                            |
 | `wire.log.debug(msg, meta)`  | `(string, any?) => void`          | Buffers a debug log entry emitted only on unhandled errors.                                                              |
 | `wire.mark(label)`           | `(string) => () => number`        | Starts a performance timer; calling the returned function records `Server-Timing`.                                       |
