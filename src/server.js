@@ -1,4 +1,5 @@
 import http from 'node:http';
+import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 import crypto from 'node:crypto';
@@ -36,6 +37,110 @@ import {
   buildStaticHttpResponse,
   createLagMonitor
 } from './utils.js';
+
+const SERVIN_WELCOME_HTML = `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#101411">
+  <meta name="description" content="Servin is a modern, zero-dependency Node.js web server built around Domain-Tree Projection and Ambient Wire.">
+  <title>Welcome to Servin</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #101411;
+      color: #edf3ed;
+      font-synthesis: none;
+      text-rendering: optimizeLegibility;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      min-width: 280px;
+      min-height: 100vh;
+      min-height: 100svh;
+      margin: 0;
+      display: grid;
+      place-items: center;
+      padding: 32px 24px;
+      background:
+        radial-gradient(ellipse at 50% 38%, rgba(163, 211, 93, .11), transparent 31rem),
+        #101411;
+    }
+
+    main { width: min(100%, 680px); text-align: center; }
+
+    .brand-mark {
+      width: 48px;
+      height: 48px;
+      margin: 0 auto 30px;
+      display: grid;
+      place-items: center;
+      border-radius: 14px;
+      background: #c5f36b;
+      color: #18210c;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 25px;
+      font-weight: 800;
+      letter-spacing: -.08em;
+    }
+
+    .eyebrow {
+      margin: 0 0 12px;
+      color: #a9c77e;
+      font-size: .72rem;
+      font-weight: 700;
+      letter-spacing: .19em;
+      text-transform: uppercase;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: clamp(2.5rem, 8vw, 4.5rem);
+      font-weight: 750;
+      letter-spacing: -.065em;
+      line-height: 1.05;
+    }
+
+    h1 span { color: #c5f36b; }
+
+    .description {
+      max-width: 540px;
+      margin: 24px auto 0;
+      color: #a0aca2;
+      font-size: clamp(.98rem, 2.5vw, 1.1rem);
+      line-height: 1.8;
+    }
+
+    .description strong { color: #dbe7d8; font-weight: 600; }
+
+    @media (max-width: 480px) {
+      .brand-mark { margin-bottom: 24px; }
+      .description { margin-top: 18px; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <div class="brand-mark" aria-hidden="true">s</div>
+    <p class="eyebrow">Node.js Web Server</p>
+    <h1>Welcome to <span>Servin</span>.</h1>
+    <p class="description">
+      A modern, zero-dependency Node.js web server built around
+      <strong>Domain-Tree Projection</strong> and <strong>Ambient Wire</strong>.
+    </p>
+  </main>
+</body>
+</html>`;
+
+function createWelcomeHandler() {
+  return () => new HtmlResponse(SERVIN_WELCOME_HTML);
+}
 
 function toWebRequest(nodeReq, host, port, signal) {
   const proto = nodeReq.socket?.encrypted ? 'https' : 'http';
@@ -170,11 +275,378 @@ export function serve(config = {}) {
   const port = config.port ?? 3000;
   const host = config.host ?? '127.0.0.1';
   const silent = config.silent ?? false;
+
+  const liveReloadOptions = config.liveReload && typeof config.liveReload === 'object'
+    ? config.liveReload
+    : {};
+  const liveReloadRequested = config.liveReload === true || liveReloadOptions.enabled === true;
+  const liveReloadEnabled = liveReloadRequested && process.env.NODE_ENV !== 'production';
+  const LIVE_RELOAD_EVENTS_PATH = '/@servin/reload';
+  const LIVE_RELOAD_SCRIPT_PATH = '/@servin/reload-client.js';
+  const liveReloadClients = new Set();
+  const liveReloadWatchers = new Map();
+  const liveReloadEncoder = new TextEncoder();
+  const liveReloadRoot = path.resolve(liveReloadOptions.root || process.cwd());
+  const rawLiveReloadTargets = liveReloadOptions.watch ?? ['./views'];
+  const liveReloadTargets = (Array.isArray(rawLiveReloadTargets)
+    ? rawLiveReloadTargets
+    : [rawLiveReloadTargets]
+  ).filter((item) => typeof item === 'string' && item.trim().length > 0);
+  const liveReloadIgnore = Array.isArray(liveReloadOptions.ignore)
+    ? liveReloadOptions.ignore.filter((item) => typeof item === 'string')
+    : [];
+  const liveReloadDebounceMs = Math.max(50, Number(liveReloadOptions.debounceMs) || 120);
+  const liveReloadIgnoredNames = new Set(['node_modules', '.git', '.hg', '.svn']);
+  let liveReloadDebounceTimer = null;
+  let liveReloadRefreshTimer = null;
+  let liveReloadHeartbeatTimer = null;
+  let liveReloadRefreshPromise = null;
+  let liveReloadStopped = false;
+
+  const liveReloadClientCode = `(() => {
+  if (window.__SERVIN_LIVE_RELOAD__) return;
+  window.__SERVIN_LIVE_RELOAD__ = true;
+
+  const events = new EventSource('${LIVE_RELOAD_EVENTS_PATH}');
+  events.addEventListener('reload', () => window.location.reload());
+
+  window.addEventListener('pagehide', () => events.close(), { once: true });
+})();`;
+
+  function liveReloadLog(message, error = null) {
+    if (silent) return;
+    if (error) console.warn(`[servin] live reload: ${message}`, error);
+    else console.log(`[servin] live reload: ${message}`);
+  }
+
+  function isLiveReloadIgnored(absolutePath) {
+    const relativePath = path.relative(liveReloadRoot, absolutePath);
+    const segments = relativePath.split(path.sep).filter(Boolean);
+    if (segments.some((segment) => liveReloadIgnoredNames.has(segment))) return true;
+
+    const normalized = relativePath.split(path.sep).join('/');
+    return liveReloadIgnore.some((ignored) => {
+      const clean = ignored.replace(/^\.\//, '').replace(/\/$/, '');
+      return normalized === clean || normalized.startsWith(`${clean}/`);
+    });
+  }
+
+  function stopLiveReloadHeartbeat() {
+    if (!liveReloadHeartbeatTimer) return;
+    clearInterval(liveReloadHeartbeatTimer);
+    liveReloadHeartbeatTimer = null;
+  }
+
+  function closeLiveReloadClient(client) {
+    if (!liveReloadClients.delete(client)) return;
+    client.signal?.removeEventListener('abort', client.onAbort);
+    if (liveReloadClients.size === 0) stopLiveReloadHeartbeat();
+    try {
+      client.controller.close();
+    } catch {
+      // The client may already have disconnected or canceled its stream.
+    }
+  }
+
+  function ensureLiveReloadHeartbeat() {
+    if (liveReloadHeartbeatTimer || liveReloadClients.size === 0) return;
+    liveReloadHeartbeatTimer = setInterval(() => {
+      const frame = liveReloadEncoder.encode(': keep-alive\n\n');
+      for (const client of [...liveReloadClients]) {
+        try {
+          client.controller.enqueue(frame);
+        } catch {
+          closeLiveReloadClient(client);
+        }
+      }
+    }, 15_000);
+    liveReloadHeartbeatTimer.unref?.();
+  }
+
+  function createLiveReloadEventsResponse(signal) {
+    let client = null;
+    const stream = new ReadableStream({
+      start(controller) {
+        client = {
+          controller,
+          signal,
+          onAbort: null
+        };
+        client.onAbort = () => closeLiveReloadClient(client);
+
+        liveReloadClients.add(client);
+        controller.enqueue(liveReloadEncoder.encode(': connected\n\n'));
+        signal.addEventListener('abort', client.onAbort, { once: true });
+        ensureLiveReloadHeartbeat();
+        if (signal.aborted) closeLiveReloadClient(client);
+      },
+      cancel() {
+        if (client) closeLiveReloadClient(client);
+      }
+    });
+
+    return new Response(stream, {
+      status: 200,
+      headers: {
+        'Content-Type': 'text/event-stream; charset=utf-8',
+        'Cache-Control': 'no-cache, no-transform',
+        'Connection': 'keep-alive',
+        'X-Accel-Buffering': 'no'
+      }
+    });
+  }
+
+  function broadcastLiveReload() {
+    if (liveReloadStopped || liveReloadClients.size === 0) return;
+    const frame = liveReloadEncoder.encode(
+      `event: reload\ndata: ${JSON.stringify({ changedAt: Date.now() })}\n\n`
+    );
+
+    for (const client of [...liveReloadClients]) {
+      try {
+        client.controller.enqueue(frame);
+      } catch {
+        closeLiveReloadClient(client);
+      }
+    }
+  }
+
+  function queueLiveReload() {
+    if (liveReloadStopped) return;
+    if (liveReloadDebounceTimer) clearTimeout(liveReloadDebounceTimer);
+    liveReloadDebounceTimer = setTimeout(() => {
+      liveReloadDebounceTimer = null;
+      broadcastLiveReload();
+    }, liveReloadDebounceMs);
+    liveReloadDebounceTimer.unref?.();
+  }
+
+  function queueLiveReloadRefresh() {
+    if (liveReloadStopped || liveReloadRefreshTimer) return;
+    liveReloadRefreshTimer = setTimeout(() => {
+      liveReloadRefreshTimer = null;
+      refreshLiveReloadWatchers().catch((err) => liveReloadLog('failed to refresh watchers', err));
+    }, 80);
+    liveReloadRefreshTimer.unref?.();
+  }
+
+  async function collectLiveReloadDirectories() {
+    const desired = new Map();
+
+    function addDirectory(directory, { all = false, filename = null, refreshOnRename = false } = {}) {
+      let entry = desired.get(directory);
+      if (!entry) {
+        entry = { all: false, names: new Set(), refreshOnRename: false };
+        desired.set(directory, entry);
+      }
+      if (all) entry.all = true;
+      if (filename) entry.names.add(filename);
+      if (refreshOnRename) entry.refreshOnRename = true;
+    }
+
+    async function scanDirectory(directory) {
+      if (isLiveReloadIgnored(directory)) return;
+      addDirectory(directory, { all: true, refreshOnRename: true });
+
+      let entries;
+      try {
+        entries = await fsp.readdir(directory, { withFileTypes: true });
+      } catch (err) {
+        liveReloadLog(`cannot read ${directory}`, err);
+        return;
+      }
+
+      for (const entry of entries) {
+        if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
+        const childPath = path.join(directory, entry.name);
+        if (!isLiveReloadIgnored(childPath)) await scanDirectory(childPath);
+      }
+    }
+
+    for (const target of liveReloadTargets) {
+      const absoluteTarget = path.resolve(liveReloadRoot, target);
+      if (isLiveReloadIgnored(absoluteTarget)) continue;
+
+      let stats;
+      try {
+        stats = await fsp.stat(absoluteTarget);
+      } catch (err) {
+        if (err.code === 'ENOENT' || err.code === 'ENOTDIR') {
+          const parent = path.dirname(absoluteTarget);
+          try {
+            const parentStats = await fsp.stat(parent);
+            if (parentStats.isDirectory()) {
+              addDirectory(parent, {
+                filename: path.basename(absoluteTarget),
+                refreshOnRename: true
+              });
+              liveReloadLog(`waiting for ${absoluteTarget} to be created`);
+              continue;
+            }
+          } catch {
+            // Fall through to the warning below.
+          }
+        }
+        liveReloadLog(`cannot watch ${absoluteTarget}`, err);
+        continue;
+      }
+
+      if (stats.isDirectory()) {
+        await scanDirectory(absoluteTarget);
+      } else if (stats.isFile()) {
+        addDirectory(path.dirname(absoluteTarget), {
+          filename: path.basename(absoluteTarget)
+        });
+      }
+    }
+
+    return desired;
+  }
+
+  async function refreshLiveReloadWatchers() {
+    if (!liveReloadEnabled || liveReloadStopped) return;
+    if (liveReloadRefreshPromise) return liveReloadRefreshPromise;
+
+    liveReloadRefreshPromise = (async () => {
+      const desired = await collectLiveReloadDirectories();
+
+      for (const [directory, current] of liveReloadWatchers) {
+        if (desired.has(directory)) continue;
+        current.watcher.close();
+        liveReloadWatchers.delete(directory);
+      }
+
+      for (const [directory, spec] of desired) {
+        const current = liveReloadWatchers.get(directory);
+        if (current) {
+          current.all = spec.all;
+          current.names = spec.names;
+          current.refreshOnRename = spec.refreshOnRename;
+          continue;
+        }
+
+        try {
+          const watcher = fs.watch(directory, { persistent: false, encoding: 'utf8' }, (eventType, filename) => {
+            const entry = liveReloadWatchers.get(directory);
+            if (!entry || liveReloadStopped) return;
+
+            const name = filename == null ? null : path.basename(String(filename));
+            const relevant = name === null
+              ? (entry.all || entry.names.size > 0)
+              : (entry.all || entry.names.has(name));
+            if (!relevant) return;
+
+            queueLiveReload();
+            if (eventType === 'rename' && entry.refreshOnRename) {
+              queueLiveReloadRefresh();
+            }
+          });
+
+          watcher.on('error', (err) => {
+            liveReloadLog(`watcher error for ${directory}`, err);
+            watcher.close();
+            liveReloadWatchers.delete(directory);
+          });
+
+          liveReloadWatchers.set(directory, {
+            watcher,
+            all: spec.all,
+            names: spec.names,
+            refreshOnRename: spec.refreshOnRename
+          });
+        } catch (err) {
+          liveReloadLog(`cannot watch ${directory}`, err);
+        }
+      }
+    })();
+
+    try {
+      await liveReloadRefreshPromise;
+    } finally {
+      liveReloadRefreshPromise = null;
+    }
+  }
+
+  async function startLiveReload() {
+    if (!liveReloadEnabled) return;
+    await refreshLiveReloadWatchers();
+    liveReloadLog(`enabled; watching ${liveReloadTargets.length} target(s)`);
+  }
+
+  function stopLiveReload() {
+    liveReloadStopped = true;
+    if (liveReloadDebounceTimer) clearTimeout(liveReloadDebounceTimer);
+    if (liveReloadRefreshTimer) clearTimeout(liveReloadRefreshTimer);
+    liveReloadDebounceTimer = null;
+    liveReloadRefreshTimer = null;
+    stopLiveReloadHeartbeat();
+
+    for (const client of [...liveReloadClients]) closeLiveReloadClient(client);
+    for (const { watcher } of liveReloadWatchers.values()) watcher.close();
+    liveReloadWatchers.clear();
+  }
+
+  async function injectLiveReloadClient(webReq, response) {
+    if (!liveReloadEnabled || webReq.method.toUpperCase() !== 'GET' || response.status !== 200) {
+      return response;
+    }
+
+    const contentType = response.headers.get('content-type') || '';
+    if (!/^text\/html(?:\s*;|$)/i.test(contentType)) return response;
+    if (response.headers.has('content-encoding') || !response.body) return response;
+    if ((response.headers.get('content-disposition') || '').toLowerCase().startsWith('attachment')) {
+      return response;
+    }
+
+    let html;
+    try {
+      html = await response.text();
+    } catch {
+      return response;
+    }
+
+    const marker = 'data-servin-live-reload';
+    let output = html;
+    let injected = false;
+
+    if (!output.includes(marker)) {
+      const scriptTag = `<script src="${LIVE_RELOAD_SCRIPT_PATH}" ${marker} defer></script>`;
+      if (/<\/body\s*>/i.test(output)) {
+        output = output.replace(/<\/body\s*>/i, `${scriptTag}\n</body>`);
+      } else {
+        output += `\n${scriptTag}`;
+      }
+      injected = true;
+    }
+
+    const headers = new Headers(response.headers);
+    if (injected) {
+      headers.delete('content-length');
+      headers.delete('content-encoding');
+      headers.delete('content-md5');
+      headers.delete('etag');
+      headers.delete('content-range');
+      headers.delete('accept-ranges');
+      headers.set('Cache-Control', 'no-store');
+    }
+
+    return new Response(output, {
+      status: response.status,
+      statusText: response.statusText,
+      headers
+    });
+  }
+
+  if (liveReloadRequested && !liveReloadEnabled && !silent) {
+    console.warn('[servin] live reload is disabled when NODE_ENV=production');
+  }
+
   const routes = compileDomainTree(
     config.api || {},
     config.types || {},
     config.static || null,
-    config.alias ?? config.aliases ?? null
+    config.alias ?? config.aliases ?? null,
+    createWelcomeHandler()
   );
   const virtualClientCode = generateVirtualClientModule(routes);
 
@@ -448,6 +920,22 @@ export function serve(config = {}) {
   async function executeHttp(webReq, reqMeta) {
     const url = new URL(webReq.url);
     const method = webReq.method.toUpperCase();
+
+    if (liveReloadEnabled && method === 'GET') {
+      if (url.pathname === LIVE_RELOAD_SCRIPT_PATH) {
+        return new Response(liveReloadClientCode, {
+          status: 200,
+          headers: {
+            'Content-Type': 'application/javascript; charset=utf-8',
+            'Cache-Control': 'no-store'
+          }
+        });
+      }
+
+      if (url.pathname === LIVE_RELOAD_EVENTS_PATH) {
+        return createLiveReloadEventsResponse(webReq.signal);
+      }
+    }
 
     if (method === 'GET' && url.pathname === '/@client.js') {
       const headers = new Headers({
@@ -955,7 +1443,8 @@ export function serve(config = {}) {
     const t0 = performance.now();
     const url = new URL(webReq.url);
     const reqMeta = { cached: false, simulated: false, requestId: null };
-    const res = await executeHttp(webReq, reqMeta);
+    const rawResponse = await executeHttp(webReq, reqMeta);
+    const res = await injectLiveReloadClient(webReq, rawResponse);
 
     emitAccessLog({
       method: webReq.method.toUpperCase(),
@@ -976,6 +1465,9 @@ export function serve(config = {}) {
     const abortCtrl = new AbortController();
     nodeReq.on('close', () => {
       if (!nodeReq.complete) abortCtrl.abort();
+    });
+    nodeRes.on('close', () => {
+      if (!nodeRes.writableEnded) abortCtrl.abort();
     });
 
     try {
@@ -1184,6 +1676,7 @@ export function serve(config = {}) {
   });
 
   const shutdown = async () => {
+    stopLiveReload();
     lagMonitor.stop();
     await new Promise((resolve) => httpServer.close(resolve));
     if (activeDefers.size > 0) {
@@ -1196,6 +1689,7 @@ export function serve(config = {}) {
 
   return new Promise((resolve) => {
     httpServer.listen(port, host, async () => {
+      await startLiveReload();
       const addr = httpServer.address();
       const actualPort = typeof addr === 'object' && addr ? addr.port : port;
       const serverUrl = `http://${host}:${actualPort}`;

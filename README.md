@@ -2,8 +2,9 @@
 
 **A modern, zero-dependency Node.js web server built around _Domain-Tree Projection_ and _Ambient Wire_.**
 
-#### Changelog 1.4.0
+#### Changelog 1.6.0
 
+- add watch file / Live Reload feature
 - fixed weird routing behavior when using get() inside api to access `/` resulting `/$anything` instead, now it is fixed for `/`.
 
 `servin` lets you build HTTP APIs, static websites, HTML pages, Server-Sent Events (SSE), and WebSockets using plain JavaScript functions and nested object trees. Instead of manually wiring string paths, `(req, res)` handlers, and `next()` middleware chains, you express your backend as a clean JavaScript object hierarchy while `servin` handles routing, parameter type coercion, self-invalidating caching, session persistence, rate limiting, and zero-build frontend client generation automatically.
@@ -23,7 +24,7 @@
    - [Step 6: Setting HTTP Status Codes & Errors (`wire.status` & `wire.abort`)](#step-6-setting-http-status-codes--errors-wirestatus--wireabort)
    - [Step 7: Updating (`patch` / `'put|patch'`) & Deleting (`delete`)](#step-7-updating-patch--putpatch--deleting-delete)
    - [Step 8: Returning HTML (`wire.html` & `wire.file`)](#step-8-returning-html-wirehtml--wirefile)
-   - [Step 9: Assembled CRUD Server](#step-9-assembled-crud-server)
+   - [Step 9: Live Reload](#live-reload)
 4. [Zero-Build Virtual ESM Client (`/@client.js`)](#4-zero-build-virtual-esm-client-clientjs)
    - [4.1 Step 1: Importing `api` in Browser or Frontend Apps](#41-step-1-importing-api-in-browser-or-frontend-apps)
    - [4.2 Step 2: Calling `GET`, `POST`, `PATCH`, `DELETE` & Typed Params](#42-step-2-calling-get-post-patch-delete--typed-params)
@@ -376,7 +377,92 @@ const about = {
 };
 ```
 
-### Step 9: Assembled CRUD Server
+### Live Reload
+
+Servin includes a built-in **Live Reload** mechanism for development. It automatically refreshes connected browser pages whenever a watched file or directory changes, eliminating the need to manually reload the browser during development.
+
+Live Reload uses Node.js's native file system watcher and Server-Sent Events (SSE), requiring no additional dependencies.
+
+#### Configuration
+
+Enable Live Reload through the `liveReload` option in `serve()`:
+
+```js
+await serve({
+  port: 3000,
+
+  liveReload: {
+    enabled: true,
+    watch: ["./views", "./public"],
+    debounceMs: 120,
+  },
+
+  api: {
+    hello: {
+      get: () => ({
+        message: "Hello from servin!",
+      }),
+    },
+  },
+});
+```
+
+#### Options
+
+| Option       | Type       | Default | Description                                                         |
+| ------------ | ---------- | ------- | ------------------------------------------------------------------- |
+| `enabled`    | `boolean`  | `false` | Enables or disables Live Reload.                                    |
+| `watch`      | `string[]` | `[]`    | Files and directories to monitor for changes.                       |
+| `debounceMs` | `number`   | `120`   | Delay in milliseconds before processing a file change notification. |
+
+The `watch` option accepts both individual file paths and directory paths. Directory monitoring includes changes within its subdirectories.
+
+#### How It Works
+
+Live Reload consists of three internal components:
+
+1. **File Watcher** — Monitors configured files and directories using Node.js native file system APIs.
+2. **SSE Notification** — Sends change notifications to connected browsers through an internal Server-Sent Events endpoint.
+3. **Browser Client** — Automatically reloads the current page when a change notification is received.
+
+The browser client is automatically injected into HTML responses while Live Reload is enabled. No manual frontend configuration is required.
+
+#### Supported Changes
+
+| Changed Resource          | Behavior         |
+| ------------------------- | ---------------- |
+| HTML / View files         | Full page reload |
+| CSS stylesheets           | Full page reload |
+| JavaScript frontend files | Full page reload |
+| Images and static assets  | Full page reload |
+| Other watched files       | Full page reload |
+
+**Note:** Live Reload performs a full page refresh, not Hot Module Replacement (HMR). Consequently, the browser reloads the entire page rather than updating individual modules or stylesheets in place.
+
+#### Development and Production
+
+Live Reload is intended for development environments.
+
+It is automatically disabled when:
+
+```js
+process.env.NODE_ENV === "production";
+```
+
+This prevents development-only file monitoring and browser reload functionality from running in production.
+
+#### Limitations
+
+Live Reload monitors file changes and refreshes browser pages. It does not automatically restart the Node.js process or recompile the server's routing configuration.
+
+| Change                    | Required Action          |
+| ------------------------- | ------------------------ |
+| Frontend views and assets | Automatic browser reload |
+| Backend source files      | Manual server restart    |
+| Server configuration      | Manual server restart    |
+| API route definitions     | Manual server restart    |
+
+Live Reload is designed to streamline frontend development while keeping Servin's zero-dependency architecture intact.
 
 Combining Steps 1–8 gives you a complete, readable CRUD server:
 

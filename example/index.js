@@ -16,8 +16,13 @@ const tasksDb = new Map([
 
 await serve({
   port: 3000,
+  liveReload: {
+    enabled: true,
+    watch: ["./"],
+    debounceMs: 120,
+  },
   api: {
-    get: () => "hello world! Welcome!",
+    get: () => "hello world! Welcomesa!",
     // GET /health
     health: {
       get: () => ({ status: "ok" }),

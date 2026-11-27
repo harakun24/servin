@@ -211,7 +211,7 @@ function classifySegment(seg, customTypes = {}, paramRule = null) {
   }
   return { type: 'static', priority: 0, value: seg, parse: null, raw: seg };
 }
-export function compileDomainTree(apiRoot = {}, customTypes = {}, staticConfig = null, aliasConfig = null) {
+export function compileDomainTree(apiRoot = {}, customTypes = {}, staticConfig = null, aliasConfig = null, welcomeHandler = null) {
   const routes = [];
   let nodeCounter = 0;
 
@@ -481,6 +481,49 @@ export function compileDomainTree(apiRoot = {}, customTypes = {}, staticConfig =
         [],
         {}
       );
+    }
+  }
+
+  // The built-in welcome view is only a fallback. Explicit root handlers,
+  // aliases, redirects, and a root static mount retain precedence.
+  if (typeof welcomeHandler === 'function') {
+    const hasRootStaticMount = Boolean(staticConfig) && (
+      typeof staticConfig === 'string' ||
+      staticConfig instanceof StaticRouteDescriptor ||
+      (
+        typeof staticConfig === 'object' &&
+        Object.keys(staticConfig).some((prefix) => prefix.replace(/^\/+|\/+$/g, '') === '')
+      )
+    );
+
+    if (!hasRootStaticMount) {
+      const hasManualRootGet = routes.some((route) =>
+        route.segments.length === 0 && route.verbs.includes('GET')
+      );
+      const rootVerbs = hasManualRootGet
+        ? []
+        : ['GET', 'HEAD'].filter((verb) =>
+          !routes.some((route) => route.segments.length === 0 && route.verbs.includes(verb))
+        );
+
+      if (rootVerbs.length > 0) {
+        routes.push({
+          nodeId: 'servin_builtin_welcome',
+          dotPath: '',
+          segments: [],
+          paramNames: [],
+          verbs: rootVerbs,
+          handler: welcomeHandler,
+          isAsyncGen: false,
+          guards: [],
+          meta: {},
+          nodeCache: null,
+          ancestorCaches: [],
+          nodeInFlight: null,
+          nodeIdempotency: null,
+          isBuiltin: true
+        });
+      }
     }
   }
 
@@ -938,7 +981,7 @@ export function matchDomainRoute(routes, method, pathname) {
 
 export function generateVirtualClientModule(routes) {
   const manifest = routes
-    .filter((r) => !r.staticDescriptor && !r.redirectDescriptor && !r.aliasDescriptor)
+    .filter((r) => !r.isBuiltin && !r.staticDescriptor && !r.redirectDescriptor && !r.aliasDescriptor)
     .map((r) => ({
       dotPath: r.dotPath,
       verbs: r.verbs,
