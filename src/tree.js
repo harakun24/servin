@@ -363,7 +363,7 @@ export function compileDomainTree(apiRoot = {}, customTypes = {}, staticConfig =
           nodeIdempotency
         });
 
-        if (!hasExplicitDynamicChild) {
+        if (!hasExplicitDynamicChild && segments.length > 0) {
           const directChildSeg = {
             type: 'wild',
             priority: 5,

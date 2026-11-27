@@ -2,6 +2,10 @@
 
 **A modern, zero-dependency Node.js web server built around _Domain-Tree Projection_ and _Ambient Wire_.**
 
+#### Changelog 1.4.0
+
+- fixed weird routing behavior when using get() inside api to access `/` resulting `/$anything` instead, now it is fixed for `/`.
+
 `servin` lets you build HTTP APIs, static websites, HTML pages, Server-Sent Events (SSE), and WebSockets using plain JavaScript functions and nested object trees. Instead of manually wiring string paths, `(req, res)` handlers, and `next()` middleware chains, you express your backend as a clean JavaScript object hierarchy while `servin` handles routing, parameter type coercion, self-invalidating caching, session persistence, rate limiting, and zero-build frontend client generation automatically.
 
 [see the real example usage here](https://github.com/harakun24/webserver-example)
@@ -1496,7 +1500,10 @@ await serve({
     home: alias("/home.html"),
     secret: guard(requireAuth, alias("/secret.html")),
     user: {
-      $id: param("int", alias((id) => `/v2/users/${id}`)),
+      $id: param(
+        "int",
+        alias((id) => `/v2/users/${id}`),
+      ),
     },
     v2: {
       users: {
@@ -1515,26 +1522,26 @@ await serve({
 
 ### 6.1 All `serve()` Options
 
-| Option            | Type                                   | Default                       | Description                                                                               |
-| :---------------- | :------------------------------------- | :---------------------------- | :---------------------------------------------------------------------------------------- |
-| `port`            | `number`                               | `3000`                        | TCP port to listen on. Pass `0` for a random OS-assigned port.                            |
-| `host`            | `string`                               | `'127.0.0.1'`                 | Host interface to bind (use `'0.0.0.0'` inside Docker/containers).                        |
-| `api`             | `object`                               | `{}`                          | Root domain object defining all routes.                                                   |
-| `static`          | `string \| StaticDescriptor \| object` | `null`                        | Root or prefix-mapped static files/directories (e.g., `{ '/assets': './public' }`).       |
+| Option            | Type                                   | Default                       | Description                                                                                         |
+| :---------------- | :------------------------------------- | :---------------------------- | :-------------------------------------------------------------------------------------------------- |
+| `port`            | `number`                               | `3000`                        | TCP port to listen on. Pass `0` for a random OS-assigned port.                                      |
+| `host`            | `string`                               | `'127.0.0.1'`                 | Host interface to bind (use `'0.0.0.0'` inside Docker/containers).                                  |
+| `api`             | `object`                               | `{}`                          | Root domain object defining all routes.                                                             |
+| `static`          | `string \| StaticDescriptor \| object` | `null`                        | Root or prefix-mapped static files/directories (e.g., `{ '/assets': './public' }`).                 |
 | `alias`           | `object \| null`                       | `null`                        | Internal route aliases mapping paths to target paths/resolvers (e.g., `{ '/home': '/home.html' }`). |
-| `errors`          | `object`                               | `undefined`                   | Custom status handlers (`404`, `401`, `403`, `500`, `'4xx'`, `'5xx'`, `default`).         |
-| `types`           | `object`                               | `{}`                          | Named custom parameter types usable via `param('typeName', branch)`.                      |
-| `session`         | `object \| null`                       | `null`                        | Session config `{ secret, ttl, cookieName, rolling, secure, sameSite, store }`.           |
-| `origins`         | `string[]`                             | `undefined`                   | Allowed CORS origins (e.g., `['https://app.example.com']` or `['*']`).                    |
-| `redact`          | `string[]`                             | `undefined`                   | Wildcard keys (e.g., `['password*', '*.secret']`) stripped from all JSON responses.       |
-| `message`         | `string \| function \| false`          | `"[servin] listening on ..."` | Custom startup log message or `false` to silence startup output.                          |
-| `onListen`        | `function`                             | `undefined`                   | Sync/async callback `({ port, host, url }) => void` run when listening starts.            |
-| `accessLog`       | `boolean \| function`                  | `true`                        | Enables per-request access logs or accepts a custom formatter `(info) => string \| null`. |
-| `silent`          | `boolean`                              | `false`                       | Disables both startup and access logs.                                                    |
-| `lagThresholdMs`  | `number`                               | `60`                          | Event-loop p95 delay threshold (ms) before `priority: 'low'` routes return `503`.         |
-| `synthesizeTests` | `string`                               | `undefined`                   | File path where verified requests are recorded as `node:test` test cases.                 |
-| `snapshotOnError` | `string`                               | `undefined`                   | Directory where `500` error snapshots are saved for local `replay()`.                     |
-| `onError`         | `function`                             | `undefined`                   | Custom unhandled error formatter `(err, { req }) => Response \| object`.                  |
+| `errors`          | `object`                               | `undefined`                   | Custom status handlers (`404`, `401`, `403`, `500`, `'4xx'`, `'5xx'`, `default`).                   |
+| `types`           | `object`                               | `{}`                          | Named custom parameter types usable via `param('typeName', branch)`.                                |
+| `session`         | `object \| null`                       | `null`                        | Session config `{ secret, ttl, cookieName, rolling, secure, sameSite, store }`.                     |
+| `origins`         | `string[]`                             | `undefined`                   | Allowed CORS origins (e.g., `['https://app.example.com']` or `['*']`).                              |
+| `redact`          | `string[]`                             | `undefined`                   | Wildcard keys (e.g., `['password*', '*.secret']`) stripped from all JSON responses.                 |
+| `message`         | `string \| function \| false`          | `"[servin] listening on ..."` | Custom startup log message or `false` to silence startup output.                                    |
+| `onListen`        | `function`                             | `undefined`                   | Sync/async callback `({ port, host, url }) => void` run when listening starts.                      |
+| `accessLog`       | `boolean \| function`                  | `true`                        | Enables per-request access logs or accepts a custom formatter `(info) => string \| null`.           |
+| `silent`          | `boolean`                              | `false`                       | Disables both startup and access logs.                                                              |
+| `lagThresholdMs`  | `number`                               | `60`                          | Event-loop p95 delay threshold (ms) before `priority: 'low'` routes return `503`.                   |
+| `synthesizeTests` | `string`                               | `undefined`                   | File path where verified requests are recorded as `node:test` test cases.                           |
+| `snapshotOnError` | `string`                               | `undefined`                   | Directory where `500` error snapshots are saved for local `replay()`.                               |
+| `onError`         | `function`                             | `undefined`                   | Custom unhandled error formatter `(err, { req }) => Response \| object`.                            |
 
 ### 6.2 Server Instance Control (`port`, `url`, `fetch`, `close`)
 

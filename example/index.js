@@ -17,6 +17,7 @@ const tasksDb = new Map([
 await serve({
   port: 3000,
   api: {
+    get: () => "hello world! Welcome!",
     // GET /health
     health: {
       get: () => ({ status: "ok" }),

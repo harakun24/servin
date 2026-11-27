@@ -1,6 +1,6 @@
 {
   "name": "@dim24/servin",
-  "version": "1.1.0",
+  "version": "1.4.0",
   "description": "A modern, zero-dependency JavaScript web server built around *Domain-Tree Projection.",
   "homepage": "https://github.com/harakun24/servin#readme",
   "bugs": {
@@ -14,19 +14,21 @@
   "author": "Abista, V. D.",
   "type": "module",
   "main": "index.js",
-  "types": "./servin.d.ts",
   "exports": {
     ".": "./index.js",
     "./test": "./test.js"
   },
   "scripts": {
     "type": "module",
-    "types": "./servin.d.ts",
     "test": "node --test tests/servin.test.js"
   },
   "keywords": [
     "web-server",
+    "web server",
+    "webserver",
     "http-server",
+    "http server",
+    "http",
     "web-framework",
     "server",
     "api",
