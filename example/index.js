@@ -22,7 +22,7 @@ await serve({
     debounceMs: 120,
   },
   api: {
-    get: () => "hello world! Welcomesa!",
+    // get: () => "hello world! Welcomesa!",
     // GET /health
     health: {
       get: () => ({ status: "ok" }),

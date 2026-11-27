@@ -5,6 +5,10 @@
 #### Changelog 1.6.0
 
 - add watch file / Live Reload feature
+- add default router for "/" automatically when it is undefined yet.
+
+#### Changelog 1.4.0
+
 - fixed weird routing behavior when using get() inside api to access `/` resulting `/$anything` instead, now it is fixed for `/`.
 
 `servin` lets you build HTTP APIs, static websites, HTML pages, Server-Sent Events (SSE), and WebSockets using plain JavaScript functions and nested object trees. Instead of manually wiring string paths, `(req, res)` handlers, and `next()` middleware chains, you express your backend as a clean JavaScript object hierarchy while `servin` handles routing, parameter type coercion, self-invalidating caching, session persistence, rate limiting, and zero-build frontend client generation automatically.
