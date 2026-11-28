@@ -556,7 +556,7 @@ function formatRouteTable(routes, { liveReloadEnabled = false } = {}) {
     'METHOD'.padEnd(methodWidth),
     'PATH'.padEnd(pathWidth),
     'TYPE'.padEnd(typeWidth),
-    'SOURCE'.padEnd(sourceWidth)
+    'SOURCE'.padEnd(sourceWidth), "\n"
   ].join('  ');
   const separator = [
     '-'.repeat(methodWidth),
@@ -572,7 +572,7 @@ function formatRouteTable(routes, { liveReloadEnabled = false } = {}) {
   ].join('  '));
 
   return [
-    `[servin] routing table (${entries.length} routes)`,
+    `\n[servin] routing table (${entries.length} routes)\n`,
     header,
     separator,
     ...rows
