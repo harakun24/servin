@@ -318,10 +318,6 @@ export function compileDomainTree(apiRoot = {}, customTypes = {}, staticConfig =
     const nodeInFlight = meta.coalesce ? new Map() : null;
     const nodeIdempotency = meta.idempotent ? new Map() : null;
 
-    const hasExplicitDynamicChild = Object.keys(node).some(
-      (k) => !META_KEYS.has(k) && k.startsWith('$')
-    );
-
     for (const [key, value] of Object.entries(node)) {
       if (META_KEYS.has(key)) continue;
 
@@ -375,32 +371,6 @@ export function compileDomainTree(apiRoot = {}, customTypes = {}, staticConfig =
           nodeIdempotency
         });
 
-        if (!hasExplicitDynamicChild && segments.length > 0) {
-          const directChildSeg = {
-            type: 'wild',
-            priority: 5,
-            param: 'id',
-            optionalWild: true,
-            directNodeParam: true,
-            parse: null,
-            raw: '$direct'
-          };
-          routes.push({
-            nodeId: `${nodeId}_direct_${key}`,
-            dotPath: [...dotPath, key].join('.'),
-            segments: [...segments, directChildSeg],
-            paramNames: [],
-            verbs,
-            handler: value,
-            isAsyncGen: value instanceof AsyncGeneratorFunction,
-            guards,
-            meta,
-            nodeCache,
-            ancestorCaches,
-            nodeInFlight,
-            nodeIdempotency
-          });
-        }
         continue;
       }
 
@@ -655,16 +625,7 @@ export function matchDomainRoute(routes, method, pathname) {
         }
         try {
           const decodedParts = parts.slice(i).map(decodeURIComponent);
-          if (seg.directNodeParam) {
-            if (decodedParts.length === 1) {
-              params.id = decodedParts[0];
-            } else if (decodedParts.length > 1) {
-              params.rest = decodedParts;
-              params.id = decodedParts[0];
-            }
-          } else {
-            params[seg.param] = decodedParts.join('/');
-          }
+          params[seg.param] = decodedParts.join('/');
         } catch {
           matched = false;
         }

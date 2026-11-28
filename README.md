@@ -2,6 +2,11 @@
 
 **A modern, zero-dependency Node.js web server built around _Domain-Tree Projection_ and _Ambient Wire_.**
 
+#### Changelog 1.8.2
+
+- fixed internal server error behavior
+- add default 404 page
+
 #### Changelog 1.8.0
 
 - dynamic path for static file/folder serve

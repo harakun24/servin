@@ -142,6 +142,178 @@ function createWelcomeHandler() {
   return () => new HtmlResponse(SERVIN_WELCOME_HTML);
 }
 
+function escapeHtml(value) {
+  return String(value ?? '').replace(/[&<>\"']/g, (char) => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '\"': '&quot;',
+    "'": '&#39;'
+  })[char]);
+}
+
+function prefersHtmlErrorPage(webReq) {
+  const accept = webReq.headers.get('accept') || '';
+  const entries = accept.toLowerCase().split(',').map((entry) => {
+    const [mediaType, ...params] = entry.trim().split(';');
+    const qParam = params.find((param) => param.trim().startsWith('q='));
+    const quality = qParam ? Number(qParam.trim().slice(2)) : 1;
+    return { mediaType: mediaType.trim(), quality: Number.isFinite(quality) ? quality : 0 };
+  });
+
+  const htmlQuality = Math.max(0, ...entries
+    .filter((entry) => entry.mediaType === 'text/html' || entry.mediaType === 'application/xhtml+xml')
+    .map((entry) => entry.quality));
+  const jsonQuality = Math.max(0, ...entries
+    .filter((entry) => entry.mediaType === 'application/json' || entry.mediaType === 'application/*')
+    .map((entry) => entry.quality));
+
+  // An explicit HTML Accept type opts into the browser page. Generic */* clients
+  // (including most API fetch clients) retain the existing JSON error response.
+  return htmlQuality > 0 && htmlQuality >= jsonQuality;
+}
+
+function createDefaultErrorPageHtml({ status, pathname, message = '' }) {
+  const isNotFound = status === 404;
+  const title = isNotFound ? 'Page Not Found' : 'Internal Server Error';
+  const headline = isNotFound
+    ? '<span>404</span> This page isn’t here.'
+    : '<span>500</span> Something went wrong.';
+  const description = isNotFound
+    ? 'The page you requested could not be found. It may have moved, or the address may be incorrect.'
+    : 'Servin encountered an unexpected error while processing your request. Please try again later.';
+  const safePath = escapeHtml(pathname || '/');
+  const safeMessage = escapeHtml(message);
+
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#101411">
+  <meta name="robots" content="noindex, nofollow">
+  <title>${status} — ${title} | Servin</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif;
+      background: #101411;
+      color: #edf3ed;
+      font-synthesis: none;
+      text-rendering: optimizeLegibility;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+    }
+    * { box-sizing: border-box; }
+    body {
+      min-width: 280px;
+      min-height: 100vh;
+      min-height: 100svh;
+      margin: 0;
+      display: grid;
+      place-items: center;
+      padding: 32px 24px;
+      background:
+        radial-gradient(ellipse at 50% 38%, rgba(163, 211, 93, .11), transparent 31rem),
+        #101411;
+    }
+    main { width: min(100%, 680px); text-align: center; }
+    .brand-mark {
+      width: 48px;
+      height: 48px;
+      margin: 0 auto 30px;
+      display: grid;
+      place-items: center;
+      border-radius: 14px;
+      background: #c5f36b;
+      color: #18210c;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 25px;
+      font-weight: 800;
+      letter-spacing: -.08em;
+    }
+    .eyebrow {
+      margin: 0 0 12px;
+      color: #a9c77e;
+      font-size: .72rem;
+      font-weight: 700;
+      letter-spacing: .19em;
+      text-transform: uppercase;
+    }
+    h1 {
+      margin: 0;
+      font-size: clamp(2.35rem, 8vw, 4.25rem);
+      font-weight: 750;
+      letter-spacing: -.065em;
+      line-height: 1.06;
+    }
+    h1 span { display: block; color: #c5f36b; font-size: .55em; margin-bottom: 12px; }
+    .description {
+      max-width: 540px;
+      margin: 24px auto 0;
+      color: #a0aca2;
+      font-size: clamp(.98rem, 2.5vw, 1.1rem);
+      line-height: 1.8;
+    }
+    .requested-path, .error-detail {
+      width: fit-content;
+      max-width: 100%;
+      margin: 22px auto 0;
+      padding: 10px 14px;
+      overflow-wrap: anywhere;
+      border: 1px solid rgba(197, 243, 107, .16);
+      border-radius: 10px;
+      background: rgba(255, 255, 255, .035);
+      color: #cbd6c9;
+      font: .88rem ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+    .error-detail { color: #e5c6a8; border-color: rgba(229, 198, 168, .2); }
+    .home-link {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 44px;
+      margin-top: 30px;
+      padding: 0 18px;
+      border-radius: 10px;
+      background: #c5f36b;
+      color: #18210c;
+      font-size: .9rem;
+      font-weight: 750;
+      text-decoration: none;
+      transition: transform .18s ease, background .18s ease;
+    }
+    .home-link:hover { transform: translateY(-2px); background: #d4ff83; }
+    .footer {
+      margin: 42px 0 0;
+      color: #647066;
+      font-size: .68rem;
+      font-weight: 650;
+      letter-spacing: .16em;
+      text-transform: uppercase;
+    }
+    @media (max-width: 480px) {
+      .brand-mark { margin-bottom: 24px; }
+      .description { margin-top: 18px; }
+    }
+    @media (prefers-reduced-motion: reduce) { .home-link { transition: none; } }
+  </style>
+</head>
+<body>
+  <main>
+    <div class="brand-mark" aria-hidden="true">s</div>
+    <p class="eyebrow">${isNotFound ? 'Request Error' : 'Server Error'}</p>
+    <h1>${headline}</h1>
+    <p class="description">${description}</p>
+    ${isNotFound ? `<p class="requested-path">${safePath}</p>` : ''}
+    ${safeMessage && !isNotFound ? `<p class="error-detail">${safeMessage}</p>` : ''}
+    <a class="home-link" href="/">Return to home</a>
+    <p class="footer">Servin · Domain-Tree Projection · Ambient Wire</p>
+  </main>
+</body>
+</html>`;
+}
+
 function formatRoutePath(segments = []) {
   if (segments.length === 0) return '/';
 
@@ -540,6 +712,8 @@ export function serve(config = {}) {
   const port = config.port ?? 3000;
   const host = config.host ?? '127.0.0.1';
   const silent = config.silent ?? false;
+  // Error messages are useful during development but may expose internals in production.
+  const exposeErrorDetails = config.exposeErrorDetails ?? (process.env.NODE_ENV !== 'production');
 
   const liveReloadOptions = config.liveReload && typeof config.liveReload === 'object'
     ? config.liveReload
@@ -945,11 +1119,17 @@ export function serve(config = {}) {
     if (silent || config.accessLog === false) return;
 
     if (typeof config.accessLog === 'function') {
-      const customLine = config.accessLog(info);
-      if (typeof customLine === 'string' && customLine.length > 0) {
-        console.log(customLine);
+      try {
+        const customLine = config.accessLog(info);
+        if (typeof customLine === 'string' && customLine.length > 0) {
+          console.log(customLine);
+        }
+        return;
+      } catch (err) {
+        // A user-supplied logger must never turn a handled request into a 400/500.
+        console.error('[servin] accessLog callback failed:', err);
+        // Fall through to the built-in access log so the request is still visible.
       }
-      return;
     }
 
     const tags = [];
@@ -1006,6 +1186,22 @@ export function serve(config = {}) {
       if (status === 405 && !defaultPayload) {
         return new Response(null, { status: 405, headers });
       }
+
+      if ((status === 404 || status === 500) && prefersHtmlErrorPage(webReq)) {
+        const detailMessage = status === 500 && exposeErrorDetails
+          ? (rawError?.message || defaultPayload?.message || '')
+          : '';
+        const html = createDefaultErrorPageHtml({
+          status,
+          pathname: url.pathname,
+          message: detailMessage
+        });
+        headers.set('Content-Type', 'text/html; charset=utf-8');
+        headers.set('Cache-Control', 'no-store');
+        headers.set('X-Content-Type-Options', 'nosniff');
+        return new Response(method === 'HEAD' ? null : html, { status, headers });
+      }
+
       return Response.json(defaultPayload || { error: 'Error' }, { status, headers });
     }
 
@@ -1036,7 +1232,7 @@ export function serve(config = {}) {
         const result = typeof handler === 'function'
           ? await handler({
             status,
-            message: defaultPayload?.error || '',
+            message: rawError?.message || defaultPayload?.message || defaultPayload?.error || '',
             details: defaultPayload?.details,
             path: url.pathname,
             method,
@@ -1722,6 +1918,13 @@ export function serve(config = {}) {
         flushDebugLogs(ctx, err);
         await writeSnapshot(ctx, route, err);
 
+        const errorMessage = err instanceof Error
+          ? err.message
+          : String(err ?? 'Unknown error');
+        if (!silent) {
+          console.error(`[servin] Unhandled error for ${method} ${(ctx.url || url).pathname}:`, err);
+        }
+
         if (config.onError) {
           const custom = await config.onError(err, { req: webReq });
           if (custom instanceof Response) return custom;
@@ -1731,7 +1934,10 @@ export function serve(config = {}) {
         return buildErrorResponse({
           webReq,
           status: 500,
-          defaultPayload: { error: 'Internal Server Error' },
+          defaultPayload: {
+            error: 'Internal Server Error',
+            ...(exposeErrorDetails ? { message: errorMessage } : {})
+          },
           existingCtx: ctx,
           rawError: err
         });
@@ -1769,7 +1975,90 @@ export function serve(config = {}) {
     return res;
   }
 
+  async function createAdapterErrorResponse(webReq, err) {
+    const errorMessage = err instanceof Error
+      ? err.message
+      : String(err ?? 'Unknown error');
+
+    if (typeof config.onError === 'function') {
+      try {
+        const custom = await config.onError(err, { req: webReq });
+        if (custom instanceof Response) return custom;
+        return Response.json(custom, { status: 500 });
+      } catch (onErrorErr) {
+        if (!silent) {
+          console.error('[servin] onError callback failed while handling an HTTP adapter error:', onErrorErr);
+        }
+      }
+    }
+
+    try {
+      return await buildErrorResponse({
+        webReq,
+        status: 500,
+        defaultPayload: {
+          error: 'Internal Server Error',
+          ...(exposeErrorDetails ? { message: errorMessage } : {})
+        },
+        rawError: err
+      });
+    } catch (errorViewErr) {
+      if (!silent) {
+        console.error('[servin] Failed to render the 500 error response:', errorViewErr);
+      }
+
+      const url = new URL(webReq.url);
+      const method = webReq.method.toUpperCase();
+      const headers = new Headers({
+        'Cache-Control': 'no-store',
+        'X-Content-Type-Options': 'nosniff'
+      });
+
+      if (prefersHtmlErrorPage(webReq)) {
+        headers.set('Content-Type', 'text/html; charset=utf-8');
+        const html = createDefaultErrorPageHtml({
+          status: 500,
+          pathname: url.pathname,
+          message: exposeErrorDetails ? errorMessage : ''
+        });
+        return new Response(method === 'HEAD' ? null : html, { status: 500, headers });
+      }
+
+      return Response.json({
+        error: 'Internal Server Error',
+        ...(exposeErrorDetails ? { message: errorMessage } : {})
+      }, { status: 500, headers });
+    }
+  }
+
+  async function writeNodeResponse(nodeRes, webRes) {
+    nodeRes.statusCode = webRes.status;
+    webRes.headers.forEach((val, key) => {
+      nodeRes.appendHeader(key, val);
+    });
+
+    if (!webRes.body) {
+      nodeRes.end();
+      return;
+    }
+
+    const reader = webRes.body.getReader();
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (!nodeRes.write(value)) {
+          await new Promise((resolve) => nodeRes.once('drain', resolve));
+        }
+      }
+      nodeRes.end();
+    } finally {
+      reader.releaseLock?.();
+    }
+  }
+
   const httpServer = http.createServer(async (nodeReq, nodeRes) => {
+    const startedAt = performance.now();
     const abortCtrl = new AbortController();
     nodeReq.on('close', () => {
       if (!nodeReq.complete) abortCtrl.abort();
@@ -1778,32 +2067,126 @@ export function serve(config = {}) {
       if (!nodeRes.writableEnded) abortCtrl.abort();
     });
 
+    let webReq = null;
     try {
-      const webReq = toWebRequest(nodeReq, host, port, abortCtrl.signal);
+      // Request conversion errors are client-side malformed requests (400).
+      // Once a Web Request exists, failures are server-side (500), not 400.
+      webReq = toWebRequest(nodeReq, host, port, abortCtrl.signal);
       const webRes = await handleHttp(webReq, nodeReq.socket?.remoteAddress || null);
-
-      nodeRes.statusCode = webRes.status;
-      webRes.headers.forEach((val, key) => {
-        nodeRes.appendHeader(key, val);
-      });
-
-      if (!webRes.body) {
-        nodeRes.end();
+      await writeNodeResponse(nodeRes, webRes);
+    } catch (err) {
+      if (nodeRes.headersSent) {
+        if (!silent) {
+          console.error(`[servin] HTTP response stream failed for ${nodeReq.method} ${nodeReq.url}:`, err);
+        }
+        nodeRes.destroy(err);
         return;
       }
 
-      const reader = webRes.body.getReader();
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        nodeRes.write(value);
-      }
-      nodeRes.end();
-    } catch {
-      if (!nodeRes.headersSent) {
+      if (!webReq) {
+        if (!silent) {
+          console.warn(`[servin] Rejected malformed HTTP request ${nodeReq.method || 'UNKNOWN'} ${nodeReq.url || '/'}:`, err);
+        }
+
+        // Keep malformed requests distinguishable from application failures, but
+        // still record them in the access log. Invalid URL text gets a safe fallback
+        // URL solely for logging; it is never used to route the request.
+        const proto = nodeReq.socket?.encrypted ? 'https' : 'http';
+        const reqHost = nodeReq.headers.host || `${host}:${port}`;
+        let rejectedUrl;
+        try {
+          rejectedUrl = new URL(nodeReq.url || '/', `${proto}://${reqHost}`);
+        } catch {
+          rejectedUrl = new URL('/', `${proto}://${host}:${port}`);
+        }
+        emitAccessLog({
+          method: String(nodeReq.method || 'UNKNOWN').toUpperCase(),
+          url: rejectedUrl,
+          status: 400,
+          durationMs: performance.now() - startedAt,
+          cached: false,
+          simulated: false,
+          requestId: null,
+          ip: nodeReq.headers['x-forwarded-for'] || nodeReq.socket?.remoteAddress || 'unknown',
+          userAgent: nodeReq.headers['user-agent'] || ''
+        });
+
         nodeRes.statusCode = 400;
+        nodeRes.setHeader('Content-Type', 'text/plain; charset=utf-8');
+        nodeRes.setHeader('Cache-Control', 'no-store');
         nodeRes.end('Bad Request');
+        return;
       }
+
+      // If response construction failed before headers were sent, discard any
+      // headers queued by the failed response before writing the 500 fallback.
+      for (const headerName of Object.keys(nodeRes.getHeaders())) {
+        nodeRes.removeHeader(headerName);
+      }
+
+      if (!silent) {
+        console.error(`[servin] HTTP adapter error for ${webReq.method} ${new URL(webReq.url).pathname}:`, err);
+      }
+
+      let errorResponse;
+      try {
+        errorResponse = await createAdapterErrorResponse(webReq, err);
+      } catch (fallbackErr) {
+        if (!silent) {
+          console.error('[servin] Failed to create an HTTP 500 fallback response:', fallbackErr);
+        }
+        const headers = new Headers({
+          'Content-Type': 'text/plain; charset=utf-8',
+          'Cache-Control': 'no-store',
+          'X-Content-Type-Options': 'nosniff'
+        });
+        errorResponse = new Response(
+          webReq.method.toUpperCase() === 'HEAD' ? null : 'Internal Server Error',
+          { status: 500, headers }
+        );
+      }
+
+      try {
+        emitAccessLog({
+          method: webReq.method.toUpperCase(),
+          url: new URL(webReq.url),
+          status: errorResponse.status,
+          durationMs: performance.now() - startedAt,
+          cached: false,
+          simulated: false,
+          requestId: null,
+          ip: webReq.headers.get('x-forwarded-for') || nodeReq.socket?.remoteAddress || 'unknown',
+          userAgent: webReq.headers.get('user-agent') || ''
+        });
+      } catch (logErr) {
+        if (!silent) console.error('[servin] Failed writing access log for HTTP adapter error:', logErr);
+      }
+
+      try {
+        await writeNodeResponse(nodeRes, errorResponse);
+      } catch (writeErr) {
+        if (!silent) console.error('[servin] Failed writing HTTP 500 response:', writeErr);
+        if (!nodeRes.destroyed) nodeRes.destroy(writeErr);
+      }
+    }
+  });
+
+  // Node's HTTP parser can reject malformed wire-level requests before the
+  // request callback runs. Log those explicitly rather than letting them look
+  // like silent application failures.
+  httpServer.on('clientError', (err, socket) => {
+    if (!silent) {
+      console.warn('[servin] HTTP parser rejected a client request:', err);
+    }
+    if (socket.writable) {
+      socket.end(
+        'HTTP/1.1 400 Bad Request\r\n' +
+        'Connection: close\r\n' +
+        'Content-Type: text/plain; charset=utf-8\r\n' +
+        'Cache-Control: no-store\r\n' +
+        'Content-Length: 11\r\n\r\n' +
+        'Bad Request'
+      );
     }
   });
 
