@@ -142,6 +142,271 @@ function createWelcomeHandler() {
   return () => new HtmlResponse(SERVIN_WELCOME_HTML);
 }
 
+function formatRoutePath(segments = []) {
+  if (segments.length === 0) return '/';
+
+  const parts = segments.map((segment) => {
+    if (segment.type === 'static') return segment.value;
+    if (segment.type === 'param') {
+      return `$${segment.param}${segment.parse ? ':typed' : ''}`;
+    }
+
+    if (segment.directNodeParam) return `$${segment.param}?`;
+    if (segment.raw === '$path') return '$path';
+    return `*${segment.param}${segment.optionalWild ? '?' : ''}`;
+  });
+
+  return `/${parts.join('/')}`;
+}
+
+function getRouteKind(route) {
+  if (route.isBuiltin) return 'built-in';
+  if (route.staticDescriptor) return 'static';
+  if (route.redirectDescriptor) return 'redirect';
+  if (route.aliasDescriptor) return 'alias';
+  if (route.verbs.includes('WS')) return 'websocket';
+  if (route.isAsyncGen) return 'SSE';
+  return 'handler';
+}
+
+function getRouteSource(route) {
+  if (route.isBuiltin) return 'servin welcome fallback';
+  if (!route.dotPath) return 'api.<root>';
+  if (route.dotPath === 'static' || route.dotPath.startsWith('static.')) return route.dotPath;
+  if (route.dotPath === 'alias' || route.dotPath.startsWith('alias.')) return route.dotPath;
+  return `api.${route.dotPath}`;
+}
+
+function isPathInside(rootPath, targetPath) {
+  const relative = path.relative(rootPath, targetPath);
+  return relative === '' || (
+    relative !== '..' &&
+    !relative.startsWith(`..${path.sep}`) &&
+    !path.isAbsolute(relative)
+  );
+}
+
+function getStaticTemplateBoundary(targetTemplate) {
+  const absoluteTemplate = path.resolve(String(targetTemplate));
+  const parts = absoluteTemplate.split(path.sep);
+  const dynamicIndex = parts.findIndex((part) => /\$[a-zA-Z_][a-zA-Z0-9_]*/.test(part));
+  if (dynamicIndex === -1) return absoluteTemplate;
+  const boundary = parts.slice(0, dynamicIndex).join(path.sep) || path.parse(absoluteTemplate).root;
+  return path.resolve(boundary);
+}
+
+function interpolateStaticTemplate(template, params = {}) {
+  let result = String(template);
+  const names = [...result.matchAll(/\$([a-zA-Z_][a-zA-Z0-9_]*)/g)].map((match) => match[1]);
+  for (const name of names) {
+    if (!Object.prototype.hasOwnProperty.call(params, name)) return null;
+    const value = String(params[name]);
+    // Template values represent one URL segment, never a path fragment.
+    if (
+      !value || value === '.' || value === '..' ||
+      value.includes('/') || value.includes('\\') || value.includes('\0') ||
+      /[\u0000-\u001f\u007f]/.test(value)
+    ) return null;
+    result = result.replace(new RegExp(`\\$${name}(?![a-zA-Z0-9_])`, 'g'), () => value);
+  }
+  return path.resolve(result);
+}
+
+function normalizeStaticRelativePath(value) {
+  return String(value || '').split(path.sep).join('/').replace(/^\/+|\/+$/g, '');
+}
+
+function staticBlockGlobToRegExp(pattern) {
+  let source = '^';
+
+  for (let index = 0; index < pattern.length; index += 1) {
+    const char = pattern[index];
+
+    if (char === '*') {
+      if (pattern[index + 1] === '*') {
+        index += 1;
+        // `**/` also matches zero directories, so `**/*.html` matches
+        // both `index.html` and `nested/index.html`.
+        if (pattern[index + 1] === '/') {
+          index += 1;
+          source += '(?:.*/)?';
+        } else {
+          source += '.*';
+        }
+      } else {
+        source += '[^/]*';
+      }
+      continue;
+    }
+
+    source += char.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  }
+
+  return new RegExp(`${source}$`);
+}
+
+function isStaticPathBlocked(relativePath, blocked = []) {
+  const normalized = normalizeStaticRelativePath(relativePath);
+  const basename = path.posix.basename(normalized);
+
+  return blocked.some((entry) => {
+    // A pattern without `/` is matched against the basename at any depth.
+    // A pattern with `/` is matched against the full path relative to the mount.
+    const candidate = entry.includes('/') ? normalized : basename;
+    return staticBlockGlobToRegExp(entry).test(candidate);
+  });
+}
+
+async function resolveStaticFolderFile(folderConfig, params = {}, subpath = '') {
+  const template = folderConfig?.path;
+  if (typeof template !== 'string') return { status: 404 };
+
+  const boundaryPath = getStaticTemplateBoundary(template);
+  let resolvedRoot = interpolateStaticTemplate(template, params);
+  if (!resolvedRoot) return { status: 404 };
+  for (const name of folderConfig.folderParams || []) {
+    if (!Object.prototype.hasOwnProperty.call(params, name)) return { status: 404 };
+    const value = String(params[name]);
+    if (
+      !value || value === '.' || value === '..' ||
+      value.includes('/') || value.includes('\\') || value.includes('\0') ||
+      /[\u0000-\u001f\u007f]/.test(value)
+    ) return { status: 404 };
+    resolvedRoot = path.resolve(resolvedRoot, value);
+  }
+  if (!isPathInside(boundaryPath, resolvedRoot)) return { status: 404 };
+
+  let realBoundary;
+  let realRoot;
+  try {
+    [realBoundary, realRoot] = await Promise.all([
+      fsp.realpath(boundaryPath),
+      fsp.realpath(resolvedRoot)
+    ]);
+  } catch {
+    return { status: 404 };
+  }
+  if (!isPathInside(realBoundary, realRoot)) return { status: 404 };
+
+  const rawSubpath = String(subpath || '');
+  if (
+    rawSubpath.startsWith('/') || rawSubpath.includes('\\') || rawSubpath.includes('\0') ||
+    /[\u0000-\u001f\u007f]/.test(rawSubpath)
+  ) return { status: 404 };
+
+  const relativeSegments = rawSubpath ? rawSubpath.split('/') : [];
+  if (relativeSegments.some((part) => part === '.' || part === '..')) return { status: 404 };
+  const candidate = path.resolve(realRoot, ...relativeSegments.filter(Boolean));
+  if (!isPathInside(realRoot, candidate)) return { status: 404 };
+
+  let realTarget;
+  let stats;
+  try {
+    realTarget = await fsp.realpath(candidate);
+    if (!isPathInside(realRoot, realTarget)) return { status: 404 };
+    stats = await fsp.stat(realTarget);
+  } catch {
+    return { status: 404 };
+  }
+
+  if (stats.isDirectory()) {
+    const indexName = folderConfig.options?.index === undefined
+      ? 'index.html'
+      : folderConfig.options.index;
+    if (indexName === false || typeof indexName !== 'string' || !indexName.trim()) return { status: 404 };
+    const indexParts = indexName.replace(/\\/g, '/').split('/');
+    if (indexParts.some((part) => !part || part === '.' || part === '..')) return { status: 404 };
+    const indexCandidate = path.resolve(realTarget, ...indexParts);
+    if (!isPathInside(realRoot, indexCandidate)) return { status: 404 };
+    try {
+      realTarget = await fsp.realpath(indexCandidate);
+      if (!isPathInside(realRoot, realTarget)) return { status: 404 };
+      stats = await fsp.stat(realTarget);
+    } catch {
+      return { status: 404 };
+    }
+  }
+
+  if (!stats.isFile()) return { status: 404 };
+
+  const relativePath = normalizeStaticRelativePath(path.relative(realRoot, realTarget));
+  const blocked = folderConfig.block || [];
+  if (isStaticPathBlocked(relativePath, blocked)) return { status: 404 };
+
+  const dotfiles = folderConfig.options?.dotfiles || 'ignore';
+  const hasDotfile = relativePath.split('/').some((part) => part.startsWith('.'));
+  if (hasDotfile && dotfiles !== 'allow') {
+    return { status: dotfiles === 'deny' ? 403 : 404 };
+  }
+
+  return { status: 200, filePath: realTarget, relativePath };
+}
+
+function formatRouteTable(routes, { liveReloadEnabled = false } = {}) {
+  const entries = routes.map((route) => ({
+    method: route.verbs.join('|'),
+    path: formatRoutePath(route.segments),
+    type: getRouteKind(route),
+    source: getRouteSource(route)
+  }));
+
+  // These endpoints are dispatched directly by the server, outside the
+  // compiled domain tree, but are still part of the effective routing map.
+  entries.push({
+    method: 'GET',
+    path: '/@client.js',
+    type: 'virtual',
+    source: 'servin client module'
+  });
+
+  if (liveReloadEnabled) {
+    entries.push(
+      {
+        method: 'GET',
+        path: '/@servin/reload-client.js',
+        type: 'internal',
+        source: 'servin live reload client'
+      },
+      {
+        method: 'GET',
+        path: '/@servin/reload',
+        type: 'SSE',
+        source: 'servin live reload events'
+      }
+    );
+  }
+
+  const methodWidth = Math.max('METHOD'.length, ...entries.map((entry) => entry.method.length));
+  const pathWidth = Math.max('PATH'.length, ...entries.map((entry) => entry.path.length));
+  const typeWidth = Math.max('TYPE'.length, ...entries.map((entry) => entry.type.length));
+  const sourceWidth = Math.max('SOURCE'.length, ...entries.map((entry) => entry.source.length));
+  const header = [
+    'METHOD'.padEnd(methodWidth),
+    'PATH'.padEnd(pathWidth),
+    'TYPE'.padEnd(typeWidth),
+    'SOURCE'.padEnd(sourceWidth)
+  ].join('  ');
+  const separator = [
+    '-'.repeat(methodWidth),
+    '-'.repeat(pathWidth),
+    '-'.repeat(typeWidth),
+    '-'.repeat(sourceWidth)
+  ].join('  ');
+  const rows = entries.map((entry) => [
+    entry.method.padEnd(methodWidth),
+    entry.path.padEnd(pathWidth),
+    entry.type.padEnd(typeWidth),
+    entry.source.padEnd(sourceWidth)
+  ].join('  '));
+
+  return [
+    `[servin] routing table (${entries.length} routes)`,
+    header,
+    separator,
+    ...rows
+  ].join('\n');
+}
+
 function toWebRequest(nodeReq, host, port, signal) {
   const proto = nodeReq.socket?.encrypted ? 'https' : 'http';
   const reqHost = nodeReq.headers.host || `${host}:${port}`;
@@ -1106,6 +1371,49 @@ export function serve(config = {}) {
         }
 
         if (route.staticDescriptor) {
+          if (route.staticFolderConfig) {
+            const resolved = await resolveStaticFolderFile(
+              route.staticFolderConfig,
+              params,
+              params.subpath || ''
+            );
+
+            if (resolved.status !== 200) {
+              return buildErrorResponse({
+                webReq,
+                status: resolved.status,
+                defaultPayload: { error: resolved.status === 403 ? 'Forbidden' : 'File Not Found' },
+                existingCtx: ctx
+              });
+            }
+
+            const fileRes = await buildFileHttpResponse(
+              wire.file(resolved.filePath),
+              webReq.headers,
+              { method, returnMissing: true }
+            );
+            if (!fileRes) {
+              return buildErrorResponse({
+                webReq,
+                status: 404,
+                defaultPayload: { error: 'File Not Found' },
+                existingCtx: ctx
+              });
+            }
+
+            const cacheControl = route.staticFolderConfig.options?.cacheControl;
+            if (cacheControl && !fileRes.headers.has('Cache-Control')) {
+              fileRes.headers.set('Cache-Control', String(cacheControl));
+            }
+            if (!ctx.isSimulated) {
+              await ctx.sessionHandle?.commit(ctx.outgoingHeaders);
+            }
+            ctx.outgoingHeaders.forEach((v, k) => {
+              if (!fileRes.headers.has(k)) fileRes.headers.set(k, v);
+            });
+            return fileRes;
+          }
+
           const staticRes = await buildStaticHttpResponse(
             route.staticDescriptor,
             params.subpath || '',
@@ -1703,6 +2011,10 @@ export function serve(config = {}) {
         if (startupText) {
           console.log(startupText);
         }
+      }
+
+      if (!silent && config.showRoutes === true) {
+        console.log(formatRouteTable(routes, { liveReloadEnabled }));
       }
 
       if (typeof config.onListen === 'function') {

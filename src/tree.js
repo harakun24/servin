@@ -215,7 +215,15 @@ export function compileDomainTree(apiRoot = {}, customTypes = {}, staticConfig =
   const routes = [];
   let nodeCounter = 0;
 
-  function registerStaticDescriptor(descriptor, baseSegments, dotPath, inheritedGuards, inheritedMeta, isRootFallback = false) {
+  function registerStaticDescriptor(
+    descriptor,
+    baseSegments,
+    dotPath,
+    inheritedGuards,
+    inheritedMeta,
+    isRootFallback = false,
+    staticFolderConfig = null
+  ) {
     const wildSeg = {
       type: 'wild',
       priority: isRootFallback ? 4 : 3,
@@ -224,7 +232,10 @@ export function compileDomainTree(apiRoot = {}, customTypes = {}, staticConfig =
       parse: null,
       raw: '$subpath'
     };
-    const fullSegments = [...baseSegments, wildSeg];
+    // A trailing `*` in the configured mount is an explicit wildcard. Older
+    // mounts such as `/assets` keep the same implicit optional wildcard.
+    const hasExplicitWildcard = baseSegments.at(-1)?.type === 'wild';
+    const fullSegments = hasExplicitWildcard ? baseSegments : [...baseSegments, wildSeg];
     const paramNames = fullSegments.filter((s) => s.type !== 'static').map((s) => s.param);
     const descGuards = [...inheritedGuards, ...(descriptor[GUARD_META] || [])];
 
@@ -235,6 +246,7 @@ export function compileDomainTree(apiRoot = {}, customTypes = {}, staticConfig =
       paramNames,
       verbs: ['GET', 'HEAD'],
       staticDescriptor: descriptor,
+      staticFolderConfig,
       handler: null,
       isAsyncGen: false,
       guards: descGuards,
@@ -453,14 +465,99 @@ export function compileDomainTree(apiRoot = {}, customTypes = {}, staticConfig =
       registerStaticDescriptor(desc, [], ['static'], [], {}, true);
     } else if (typeof staticConfig === 'object') {
       for (const [mountPrefix, target] of Object.entries(staticConfig)) {
-        const desc = target instanceof StaticRouteDescriptor
-          ? target
-          : new StaticRouteDescriptor(target);
+        const isFolderConfig = Boolean(
+          target &&
+          typeof target === 'object' &&
+          !(target instanceof StaticRouteDescriptor) &&
+          !Array.isArray(target) &&
+          Object.prototype.hasOwnProperty.call(target, 'path')
+        );
+
+        let desc;
+        let staticFolderConfig = null;
+        let targetPath = null;
+        let staticOptions = {};
+        let block = [];
+        let normalizedBlock = [];
+        if (isFolderConfig) {
+          if (typeof target.path !== 'string' || !target.path.trim()) {
+            throw new TypeError(`[servin] static route "${mountPrefix}" requires a non-empty string path`);
+          }
+          const { path: configuredPath, block: configuredBlock, ...restOptions } = target;
+          targetPath = configuredPath;
+          block = configuredBlock ?? [];
+          staticOptions = restOptions;
+          if (!Array.isArray(block) || block.some((entry) => typeof entry !== 'string' || !entry.trim())) {
+            throw new TypeError(`[servin] static route "${mountPrefix}" block must be an array of non-empty strings`);
+          }
+          normalizedBlock = block.map((entry) => {
+            const value = entry.replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
+            const parts = value.split('/');
+            if (!value || parts.some((part) => !part || part === '.' || part === '..') || /[\u0000-\u001f\u007f]/.test(value)) {
+              throw new TypeError(`[servin] invalid blocked static path "${entry}" in route "${mountPrefix}"`);
+            }
+            return value;
+          });
+          desc = new StaticRouteDescriptor(targetPath, staticOptions);
+        } else {
+          desc = target instanceof StaticRouteDescriptor
+            ? target
+            : new StaticRouteDescriptor(target);
+        }
+
         const cleanPrefix = mountPrefix.replace(/^\/+|\/+$/g, '');
-        const prefixSegs = cleanPrefix
-          ? cleanPrefix.split('/').map((s) => classifySegment(s, customTypes))
-          : [];
-        registerStaticDescriptor(desc, prefixSegs, ['static', ...prefixSegs.map((s) => s.raw)], [], {}, prefixSegs.length === 0);
+        const rawSegments = cleanPrefix ? cleanPrefix.split('/') : [];
+        if (rawSegments.slice(0, -1).includes('*')) {
+          throw new Error(`[servin] static wildcard "*" must be the final segment in "${mountPrefix}"`);
+        }
+        const prefixSegs = rawSegments.map((segment) => segment === '*'
+          ? {
+              type: 'wild',
+              priority: 3,
+              param: 'subpath',
+              optionalWild: true,
+              parse: null,
+              raw: '*'
+            }
+          : classifySegment(segment, customTypes));
+
+        const hasDynamicMountParams = prefixSegs.some((segment) =>
+          segment.type !== 'wild' && segment.type !== 'static'
+        );
+
+        // A dynamic wildcard mount can use either a string root or an object
+        // with { path, block }. Parameters omitted from the path template are
+        // appended as folder names, e.g. `/$data/*` + `./view` -> `./view/$data`.
+        if (isFolderConfig || (typeof target === 'string' && hasDynamicMountParams && prefixSegs.some((segment) => segment.type === 'wild'))) {
+          if (!prefixSegs.some((segment) => segment.type === 'wild')) {
+            throw new Error(`[servin] dynamic static folder route "${mountPrefix}" must end with "/*"`);
+          }
+          const routeParams = prefixSegs
+            .filter((segment) => segment.type !== 'wild' && segment.type !== 'static')
+            .map((segment) => segment.param);
+          const templateParams = [...String(targetPath ?? (typeof target === 'string' ? target : '')).matchAll(/\$([a-zA-Z_][a-zA-Z0-9_]*)/g)].map((match) => match[1]);
+          const missingParams = [...new Set(templateParams)].filter((name) => !routeParams.includes(name));
+          if (missingParams.length > 0) {
+            throw new Error(`[servin] Static folder template "${targetPath ?? target}" references URL parameter(s) not present in "${mountPrefix}": ${missingParams.join(', ')}`);
+          }
+          const pathParams = new Set(templateParams);
+          staticFolderConfig = {
+            path: targetPath ?? target,
+            block: [...new Set(normalizedBlock)],
+            options: staticOptions,
+            folderParams: routeParams.filter((name) => !pathParams.has(name))
+          };
+        }
+
+        registerStaticDescriptor(
+          desc,
+          prefixSegs,
+          ['static', ...prefixSegs.map((s) => s.raw)],
+          [],
+          {},
+          prefixSegs.length === 0,
+          staticFolderConfig
+        );
       }
     }
   }

@@ -2,6 +2,11 @@
 
 **A modern, zero-dependency Node.js web server built around _Domain-Tree Projection_ and _Ambient Wire_.**
 
+#### Changelog 1.8.0
+
+- dynamic path for static file/folder serve
+- add routing table
+
 #### Changelog 1.6.0
 
 - add watch file / Live Reload feature
@@ -1396,6 +1401,30 @@ await serve({
 });
 ```
 
+**Dynamic folder mounts with blocked files:**
+
+Use a trailing `*` to serve every file under a selected folder, including nested subfolders. A `path` template can reference parameters captured from the URL. The optional `block` array denies selected file paths while leaving other files in the same folder accessible:
+
+```javascript
+import { serve } from "servin";
+
+await serve({
+  port: 3000,
+  static: {
+    "/$data/*": {
+      path: "./view",
+      block: [
+        "index.html", // block this filename at any depth
+        "*.html", // block every HTML file at any depth
+        "private/*.json", // block JSON files directly inside private/
+      ],
+    },
+  },
+});
+```
+
+For example, `GET /dashboard/css/main.css` serves `./view/dashboard/css/main.css`, and `GET /dashboard/js/script.css` serves `./view/dashboard/js/script.css`. `GET /dashboard/index.html` returns `404`, while the CSS and JavaScript files remain available. The path in the config is the base folder; dynamic mount parameters not written as `$name` in `path` are automatically appended as folder names. You may also use the shorter string form `"/$data/*": "./view"` when no files need to be blocked, or write `path: "./view/$data"` explicitly; in that case the parameter is not appended a second time. A block entry without a slash (such as `index.html` or `*.html`) is matched against the filename at any depth. Use an exact name to block one filename, or a wildcard extension such as `*.html` to block every HTML file while keeping CSS, JavaScript, images, and other files available. An entry containing `/` is matched against the path relative to the mounted folder: `private/config.json` blocks one exact path, `private/*.json` blocks JSON files directly inside `private`, and `private/**/*.json` blocks JSON files recursively. In these patterns, `*` matches characters within one path segment, while `**` can span multiple folder segments; `**/` also matches zero subfolders. Blocked paths are relative to the resolved folder. Path traversal and symlinks escaping the mounted folder are rejected.
+
 **Step 2 — Mount static directories inside the `api` tree with `serveStatic()` (and combine with `guard()`):**
 
 ```javascript
@@ -1612,26 +1641,27 @@ await serve({
 
 ### 6.1 All `serve()` Options
 
-| Option            | Type                                   | Default                       | Description                                                                                         |
-| :---------------- | :------------------------------------- | :---------------------------- | :-------------------------------------------------------------------------------------------------- |
-| `port`            | `number`                               | `3000`                        | TCP port to listen on. Pass `0` for a random OS-assigned port.                                      |
-| `host`            | `string`                               | `'127.0.0.1'`                 | Host interface to bind (use `'0.0.0.0'` inside Docker/containers).                                  |
-| `api`             | `object`                               | `{}`                          | Root domain object defining all routes.                                                             |
-| `static`          | `string \| StaticDescriptor \| object` | `null`                        | Root or prefix-mapped static files/directories (e.g., `{ '/assets': './public' }`).                 |
-| `alias`           | `object \| null`                       | `null`                        | Internal route aliases mapping paths to target paths/resolvers (e.g., `{ '/home': '/home.html' }`). |
-| `errors`          | `object`                               | `undefined`                   | Custom status handlers (`404`, `401`, `403`, `500`, `'4xx'`, `'5xx'`, `default`).                   |
-| `types`           | `object`                               | `{}`                          | Named custom parameter types usable via `param('typeName', branch)`.                                |
-| `session`         | `object \| null`                       | `null`                        | Session config `{ secret, ttl, cookieName, rolling, secure, sameSite, store }`.                     |
-| `origins`         | `string[]`                             | `undefined`                   | Allowed CORS origins (e.g., `['https://app.example.com']` or `['*']`).                              |
-| `redact`          | `string[]`                             | `undefined`                   | Wildcard keys (e.g., `['password*', '*.secret']`) stripped from all JSON responses.                 |
-| `message`         | `string \| function \| false`          | `"[servin] listening on ..."` | Custom startup log message or `false` to silence startup output.                                    |
-| `onListen`        | `function`                             | `undefined`                   | Sync/async callback `({ port, host, url }) => void` run when listening starts.                      |
-| `accessLog`       | `boolean \| function`                  | `true`                        | Enables per-request access logs or accepts a custom formatter `(info) => string \| null`.           |
-| `silent`          | `boolean`                              | `false`                       | Disables both startup and access logs.                                                              |
-| `lagThresholdMs`  | `number`                               | `60`                          | Event-loop p95 delay threshold (ms) before `priority: 'low'` routes return `503`.                   |
-| `synthesizeTests` | `string`                               | `undefined`                   | File path where verified requests are recorded as `node:test` test cases.                           |
-| `snapshotOnError` | `string`                               | `undefined`                   | Directory where `500` error snapshots are saved for local `replay()`.                               |
-| `onError`         | `function`                             | `undefined`                   | Custom unhandled error formatter `(err, { req }) => Response \| object`.                            |
+| Option            | Type                                   | Default                       | Description                                                                                                                                                                                                                     |
+| :---------------- | :------------------------------------- | :---------------------------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `port`            | `number`                               | `3000`                        | TCP port to listen on. Pass `0` for a random OS-assigned port.                                                                                                                                                                  |
+| `host`            | `string`                               | `'127.0.0.1'`                 | Host interface to bind (use `'0.0.0.0'` inside Docker/containers).                                                                                                                                                              |
+| `api`             | `object`                               | `{}`                          | Root domain object defining all routes.                                                                                                                                                                                         |
+| `static`          | `string \| StaticDescriptor \| object` | `null`                        | Root/prefix static mounts; dynamic folder mounts support `{ path, block: string[] }` with exact names and `*`/`**` patterns (e.g., `{ '/$data/*': { path: './view', block: ['index.html', '*.html', 'private/**/*.json'] } }`). |
+| `alias`           | `object \| null`                       | `null`                        | Internal route aliases mapping paths to target paths/resolvers (e.g., `{ '/home': '/home.html' }`).                                                                                                                             |
+| `errors`          | `object`                               | `undefined`                   | Custom status handlers (`404`, `401`, `403`, `500`, `'4xx'`, `'5xx'`, `default`).                                                                                                                                               |
+| `types`           | `object`                               | `{}`                          | Named custom parameter types usable via `param('typeName', branch)`.                                                                                                                                                            |
+| `session`         | `object \| null`                       | `null`                        | Session config `{ secret, ttl, cookieName, rolling, secure, sameSite, store }`.                                                                                                                                                 |
+| `origins`         | `string[]`                             | `undefined`                   | Allowed CORS origins (e.g., `['https://app.example.com']` or `['*']`).                                                                                                                                                          |
+| `redact`          | `string[]`                             | `undefined`                   | Wildcard keys (e.g., `['password*', '*.secret']`) stripped from all JSON responses.                                                                                                                                             |
+| `message`         | `string \| function \| false`          | `"[servin] listening on ..."` | Custom startup log message or `false` to silence startup output.                                                                                                                                                                |
+| `showRoutes`      | `boolean`                              | `false`                       | Prints the compiled routing table (method, path, route type, and source) after the server starts.                                                                                                                               |
+| `onListen`        | `function`                             | `undefined`                   | Sync/async callback `({ port, host, url }) => void` run when listening starts.                                                                                                                                                  |
+| `accessLog`       | `boolean \| function`                  | `true`                        | Enables per-request access logs or accepts a custom formatter `(info) => string \| null`.                                                                                                                                       |
+| `silent`          | `boolean`                              | `false`                       | Disables both startup and access logs.                                                                                                                                                                                          |
+| `lagThresholdMs`  | `number`                               | `60`                          | Event-loop p95 delay threshold (ms) before `priority: 'low'` routes return `503`.                                                                                                                                               |
+| `synthesizeTests` | `string`                               | `undefined`                   | File path where verified requests are recorded as `node:test` test cases.                                                                                                                                                       |
+| `snapshotOnError` | `string`                               | `undefined`                   | Directory where `500` error snapshots are saved for local `replay()`.                                                                                                                                                           |
+| `onError`         | `function`                             | `undefined`                   | Custom unhandled error formatter `(err, { req }) => Response \| object`.                                                                                                                                                        |
 
 ### 6.2 Server Instance Control (`port`, `url`, `fetch`, `close`)
 
@@ -2379,6 +2409,36 @@ await serve({
   api: {},
 });
 ```
+
+**3. Print the full compiled routing table at startup:**
+
+Set `showRoutes: true` to list every compiled API, static, alias, redirect, and built-in route with its HTTP method, URL pattern, route type, and source node. Typed parameters are marked with `:typed`, while `*subpath?` marks an optional wildcard. The virtual `GET /@client.js` endpoint is also listed, along with the internal Live Reload endpoints when Live Reload is enabled.
+
+```javascript
+await serve({
+  port: 3000,
+  showRoutes: true,
+  api: {
+    health: { get: () => ({ ok: true }) },
+    users: {
+      get: () => [],
+      $id: {
+        get: (id) => ({ id }),
+        patch: (id, payload) => ({ id, ...payload }),
+      },
+    },
+    chat: {
+      ws: {
+        open(socket) {
+          socket.send({ connected: true });
+        },
+      },
+    },
+  },
+});
+```
+
+The route table is opt-in and is suppressed by `silent: true`.
 
 ### 14.2 Error-Triggered Debug Trace (`wire.log.debug`) & `Server-Timing` (`wire.mark`)
 
